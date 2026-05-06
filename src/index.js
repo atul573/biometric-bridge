@@ -438,8 +438,28 @@ app.get("/iclock/cdata", (req, res) => {
     ip: req.ip,
     mode: "HTTP/ADMS",
   };
-  // Tell device to push AttLog in realtime
-  res.send(`GET OPTION FROM: ${sn}\r\nATTLOGStamp=0\r\nOPERLOGStamp=0\r\nATTPHOTOStamp=0\r\nErrorDelay=30\r\nDelay=10\r\nTransTimes=00:00;14:05\r\nTransInterval=1\r\nTransFlag=TransData AttLog\r\nTimeZone=5.5\r\nRealtime=1\r\nEncrypt=0\r\n`);
+
+  // ── Exact format matched from working ZKTeco ADMS server ──
+  // Stamp=9999 → device sends ALL logs (from stamp 0 to 9999 means "send everything")
+  // TransFlag=1111000000 → binary flags: AttLog|OpLog|EnrollUser|ChgUser|EnrollFP|ChgFP|...
+  // ResLogDay=18250, ResLogDelCount, ResLogCount → log retention config
+  // Realtime=1 → device pushes punches immediately as they happen
+  const opStamp = Math.floor(Date.now() / 1000);
+  res.send(
+    `GET OPTION FROM: ${sn}\r\n` +
+    `Stamp=9999\r\n` +
+    `OpStamp=${opStamp}\r\n` +
+    `ErrorDelay=60\r\n` +
+    `Delay=30\r\n` +
+    `ResLogDay=18250\r\n` +
+    `ResLogDelCount=10000\r\n` +
+    `ResLogCount=50000\r\n` +
+    `TransTimes=00:00;14:05\r\n` +
+    `TransInterval=1\r\n` +
+    `TransFlag=1111000000\r\n` +
+    `Realtime=1\r\n` +
+    `Encrypt=0`
+  );
 });
 
 app.post("/iclock/cdata", async (req, res) => {
@@ -498,10 +518,20 @@ app.post("/iclock/cdata", async (req, res) => {
         log(`❌ HTTP forward failed: ${e.message}`);
       }
     }
+  } else if (table === "OPERLOG") {
+    // Operation log — just count and ACK
+    const body = typeof req.body === "string" ? req.body : req.body?.toString() || "";
+    const lines = body.split(/\r?\n/).filter(l => l.trim());
+    log(`📋 OPERLOG: ${lines.length} operation log(s) received`);
+    return res.send(`OK: ${lines.length}`);
   }
 
-  // CRITICAL: Responding with "OK" tells the device to CLEAR this record from its queue
-  res.send("OK");
+  // CRITICAL: "OK: N" format — working server uses this exact format
+  // device parses count N to confirm records received, then clears its flash queue
+  // Even duplicates get OK: (lines count) so device knows server saw them
+  const body2 = typeof req.body === "string" ? req.body : req.body?.toString() || "";
+  const totalLines = body2.split(/\r?\n/).filter(l => l.trim()).length;
+  res.send(`OK: ${totalLines}`);
 });
 
 // ═══════════════════════════════════════════════════════════════════

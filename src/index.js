@@ -569,8 +569,8 @@ const tcpServer = net.createServer((socket) => {
     // This is the critical fix: device expects raw 0x06
     // ══════════════════════════════════════════════════════
     try {
-      socket.write(ACK_BYTE);
-      log(`✅ ACK 0x06 sent IMMEDIATELY to ${remote}`);
+      socket.write(ACK_OK);
+      log(`✅ ACK "OK" sent IMMEDIATELY to ${remote}`);
     } catch (e) {
       log(`⚠️ Failed to send ACK: ${e.message}`);
     }

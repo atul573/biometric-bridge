@@ -653,110 +653,130 @@ app.post("/admin/clear-device-log", async (req, res) => {
 
 // ═══════════════════════════════════════════════════════════════════
 // FKWEB MODE — Mantra BioFace HTTP Push ("fkweb" Server-Client Mode)
-// Device config: Server-Client Mode = fkweb
-//                Web Server URL = http://168.144.119.199/fkweb/attendance
-//                             OR http://168.144.119.199/fkweb/
-// Protocol: HTTP POST with XML or form body, responds OK
+// Generalized: works with Mantra, ZKTeco rebrands, and any fkweb device.
+// FIFO queue: records forwarded in order, deduplicated for Aimify.
 // ═══════════════════════════════════════════════════════════════════
 
-async function handleFkwebRequest(req, res) {
-  const method = req.method;
-  const url = req.originalUrl;
-  const requestCode = req.headers['request_code'] || '';
-  const devId = req.headers['dev_id'] || req.query.dev_id || 'unknown';
-  const transId = req.headers['trans_id'] || '';
-  const blkNo = req.headers['blk_no'] || '';
+// ── FIFO server-side pending queue ──────────────────────────────────
+// Strategy: ACK device IMMEDIATELY (so it advances flash queue),
+//           then forward to Aimify asynchronously in FIFO order.
+//           Dedup (by userID+timestamp) prevents double-posting to Aimify.
+const fkwebQueue    = [];  // [{userID,timestamp,ioMode,verifyMode,devId,key}]
+let   fkwebFlushing = false;
 
-  // Get raw binary body (Buffer) or text body
-  const rawBuf = Buffer.isBuffer(req.body) ? req.body
-               : typeof req.body === 'string' ? Buffer.from(req.body)
+async function drainFkwebQueue() {
+  if (fkwebFlushing) return;
+  fkwebFlushing = true;
+  while (fkwebQueue.length > 0) {
+    const item = fkwebQueue[0];
+    try {
+      const attlogBody = `${item.userID}	${item.timestamp}	${item.ioMode}	${item.verifyMode}	0	0	0`;
+      await sendPunchLogs(item.devId, attlogBody);
+      state.forwarded++;
+      state.lastForward = new Date().toISOString();
+      state.records.push({
+        source: 'fkweb', userID: item.userID, timestamp: item.timestamp,
+        status: String(item.ioMode), receivedAt: new Date().toISOString()
+      });
+      log(`✅ FKWEB FIFO [${fkwebQueue.length - 1} remaining]: Forwarded User ${item.userID} @ ${item.timestamp} to Aimify`);
+    } catch (e) {
+      state.forwardErrors++;
+      log(`❌ FKWEB FIFO forward failed: ${e.message} — will retry`);
+      break;
+    }
+    fkwebQueue.shift();
+  }
+  fkwebFlushing = false;
+}
+
+// ── Parse binary fkweb payload → JSON ───────────────────────────────
+// Format: [1B type][3B padding][JSON body]
+function parseFkwebPayload(rawBuf) {
+  const jsonStart = rawBuf.indexOf(0x7B);
+  if (jsonStart === -1) return null;
+  try { return JSON.parse(rawBuf.slice(jsonStart).toString('utf8')); }
+  catch (_) { return null; }
+}
+
+// ── Format io_time: "20260506215837" → "2026-05-06 21:58:37" ────────
+function fmtIoTime(raw) {
+  if (!raw || raw.length !== 14) return raw || '';
+  return `${raw.slice(0,4)}-${raw.slice(4,6)}-${raw.slice(6,8)} ${raw.slice(8,10)}:${raw.slice(10,12)}:${raw.slice(12,14)}`;
+}
+
+async function handleFkwebRequest(req, res) {
+  const requestCode = (req.headers['request_code'] || '').trim();
+  const devId       = req.headers['dev_id'] || req.query.dev_id || 'unknown';
+  const transId     = req.headers['trans_id'] || '';
+  const blkNo       = req.headers['blk_no'] || '';
+
+  const rawBuf = Buffer.isBuffer(req.body)     ? req.body
+               : typeof req.body === 'string'  ? Buffer.from(req.body)
                : Buffer.alloc(0);
 
-  log(`📡 FKWEB ${method} ${url} | code=${requestCode} dev=${devId} trans=${transId} blk=${blkNo} | ${rawBuf.length} bytes`);
+  log(`📡 FKWEB code=${requestCode||'NONE'} dev=${devId} trans=${transId} blk=${blkNo} | ${rawBuf.length}B`);
 
-  // ── realtime_glog: attendance punch event ──
+  // ─── 1. realtime_glog ─── attendance punch ──────────────────────
+  // ACK with {"result":0} immediately so device advances its FIFO flash queue.
+  // Enqueue for async FIFO forwarding to Aimify.
   if (requestCode === 'realtime_glog') {
-    log(`📡 FKWEB ATTENDANCE LOG received (${rawBuf.length} bytes) from dev=${devId}`);
+    const glog = parseFkwebPayload(rawBuf);
+    if (glog) {
+      const userID     = String(parseInt(glog.user_id || '0', 10));
+      const timestamp  = fmtIoTime(glog.io_time || '');
+      const ioMode     = glog.io_mode    ?? 0;
+      const verifyMode = glog.verify_mode ?? 0;
+      const dedupKey   = `fkweb|${userID}|${timestamp}`;
 
-    // Format: [1 byte type][3 bytes padding][JSON payload]
-    // JSON contains: user_id, io_time (YYYYMMDDHHmmss), verify_mode, io_mode
-    try {
-      // Find JSON start (first '{')
-      const jsonStart = rawBuf.indexOf(0x7B); // 0x7B = '{'
-      if (jsonStart === -1) throw new Error('No JSON found in glog payload');
+      log(`📋 GLOG: User=${userID} time=${timestamp} io=${ioMode} verify=${verifyMode}`);
 
-      const jsonStr = rawBuf.slice(jsonStart).toString('utf8');
-      log(`📡 FKWEB glog JSON: ${jsonStr}`);
-      const glog = JSON.parse(jsonStr);
-
-      // user_id is zero-padded like "00000078" → "78"
-      const userID = String(parseInt(glog.user_id || '0', 10));
-
-      // io_time format: "20260506215837" → "2026-05-06 21:58:37"
-      const raw = glog.io_time || '';
-      const timestamp = raw.length === 14
-        ? `${raw.slice(0,4)}-${raw.slice(4,6)}-${raw.slice(6,8)} ${raw.slice(8,10)}:${raw.slice(10,12)}:${raw.slice(12,14)}`
-        : raw;
-
-      const ioMode   = glog.io_mode ?? 0;    // 0=check-in, 1=check-out
-      const verifyMode = glog.verify_mode ?? 0; // 1=card, 2=FP, 15=face
-
-      log(`📋 FKWEB ATTENDANCE: User ${userID} | ${timestamp} | io_mode=${ioMode} | verify=${verifyMode} | dev=${devId}`);
-
-      const dedupKey = `fkweb|${userID}|${timestamp}`;
       if (!state.processedTransIDs.has(dedupKey)) {
         state.processedTransIDs.add(dedupKey);
-        const attlogBody = `${userID}\t${timestamp}\t${ioMode}\t${verifyMode}\t0\t0\t0`;
-        await sendPunchLogs(devId, attlogBody);
-        state.forwarded++;
-        state.lastForward = new Date().toISOString();
-        state.records.push({ source: 'fkweb', userID, timestamp, status: String(ioMode), receivedAt: new Date().toISOString() });
-        log(`✅ FKWEB: Forwarded User ${userID} @ ${timestamp} to Aimify`);
+        fkwebQueue.push({ userID, timestamp, ioMode, verifyMode, devId, key: dedupKey });
+        log(`📥 FIFO enqueued [${fkwebQueue.length} pending]: ${dedupKey}`);
+        drainFkwebQueue().catch(e => log(`❌ Queue drain: ${e.message}`));
       } else {
-        log(`⏭️ FKWEB duplicate ${dedupKey} — skipping`);
+        log(`⏭️  Duplicate ${dedupKey} — ACK device, skip Aimify`);
       }
-    } catch (e) {
-      log(`❌ FKWEB glog parse error: ${e.message}`);
-      log(`❌ FKWEB raw hex: ${rawBuf.toString('hex')}`);
+    } else {
+      log(`⚠️  GLOG parse failed | hex: ${rawBuf.toString('hex').slice(0, 80)}`);
     }
 
-    // ACK the glog — plain OK is all the device needs to know HTTP request succeeded
-    // Queue clearing happens via receive_cmd's fk_cmd response (delete command)
-    res.status(200).send('OK');
+    // ALWAYS ACK — minimal JSON, device checks result:0 to clear from flash
+    res.status(200).json({ result: 0 });
     return;
   }
 
-  // ── realtime_enroll_data: fingerprint template — ACK with JSON ──
+  // ─── 2. realtime_enroll_data ─── biometric template block ───────
+  // Echo blk_no back so device confirms the correct block was received.
   if (requestCode === 'realtime_enroll_data') {
-    log(`📡 FKWEB enroll data (fingerprint template) ${rawBuf.length} bytes — ACK`);
-    res.json({ result: 0, res_code: 'realtime_enroll_data' });
+    const blk = parseInt(blkNo || '1', 10);
+    log(`📦 ENROLL blk=${blk} ${rawBuf.length}B — ACK`);
+    res.status(200).json({ result: 0, res_code: 'realtime_enroll_data', blk_no: blk });
     return;
   }
 
-  // ── receive_cmd: device polls for pending server commands ──
-  // This is the QUEUE ADVANCE mechanism: respond with fk_cmd to tell device to delete sent glogs
+  // ─── 3. receive_cmd ─── device heartbeat / command poll ─────────
+  // fk_cmd:[] = no commands pending. Device updates its state and goes idle.
   if (requestCode === 'receive_cmd') {
-    try {
-      const jsonStart = rawBuf.indexOf(0x7B);
-      const cmdInfo = jsonStart >= 0 ? JSON.parse(rawBuf.slice(jsonStart).toString('utf8')) : {};
-      log(`📡 FKWEB receive_cmd transId=${transId} fk_time=${cmdInfo.fk_time || '?'} firmware=${cmdInfo.fk_info?.firmware || '?'}`);
-      state.devices[devId] = { ...(state.devices[devId] || {}), lastSeen: new Date().toISOString(), ip: req.ip, mode: 'fkweb', firmware: cmdInfo.fk_info?.firmware };
-      state.deviceSN = devId;
-    } catch (_) {}
+    const info     = parseFkwebPayload(rawBuf) || {};
+    const firmware = info.fk_info?.firmware || '?';
+    log(`💓 receive_cmd trans=${transId} fw=${firmware} | FIFO queue=${fkwebQueue.length}`);
 
-    // Send fk_cmd to instruct device to delete all previously-sent glog records from flash
-    // This is the standard fkweb queue-clear mechanism — the server sends a 'clear_glog' command
-    const fkCmds = [
-      { cmd: 'clear_glog', result: 0 },        // Variant 1: clear all sent glogs
-      { cmd: 'delete_att_log', result: 0 },    // Variant 2: ZKTeco-style delete
-      { cmd: 'ack_glog', result: 0 },          // Variant 3: acknowledge glog
-    ];
-    log(`📤 FKWEB receive_cmd ACK → fk_cmd=${JSON.stringify(fkCmds)}`);
-    res.status(200).json({ result: 0, res_code: 'receive_cmd', trans_id: transId, fk_cmd: fkCmds });
+    state.devices[devId] = {
+      ...(state.devices[devId] || {}),
+      lastSeen: new Date().toISOString(),
+      ip: req.ip, mode: 'fkweb', firmware,
+    };
+    state.deviceSN = devId;
+    state.heartbeats++;
+    state.lastHeartbeat = new Date().toISOString();
+
+    res.status(200).json({ result: 0, res_code: 'receive_cmd', trans_id: transId, fk_cmd: [] });
     return;
   }
 
-  // ── Generic: log body and ACK ──
+  // ─── 4. Fallback: XML / TSV / unknown ───────────────────────────
   const bodyText = rawBuf.toString('utf8');
   if (bodyText.includes('<Message>') || bodyText.includes('</Message>')) {
     await processMantraMessage(rawBuf, req.ip);
@@ -764,33 +784,29 @@ async function handleFkwebRequest(req, res) {
     return;
   }
   if (bodyText.includes('\t')) {
-    const sn = devId;
     const lines = bodyText.split('\n').filter(l => l.trim());
-    const records = [];
     for (const line of lines) {
       const parts = line.split('\t');
       if (parts.length >= 2) {
-        const userID = parts[0].trim();
+        const userID    = parts[0].trim();
         const timestamp = parts[1].trim();
-        const status = parts[2]?.trim() || '0';
-        const dedupKey = `fkweb|${userID}|${timestamp}`;
+        const ioMode    = parts[2]?.trim() || '0';
+        const dedupKey  = `fkweb|${userID}|${timestamp}`;
         if (!state.processedTransIDs.has(dedupKey)) {
           state.processedTransIDs.add(dedupKey);
-          records.push({ userID, timestamp, status });
+          fkwebQueue.push({ userID, timestamp, ioMode, verifyMode: 1, devId, key: dedupKey });
         }
       }
     }
-    if (records.length > 0) {
-      const attlogBody = records.map(r => `${r.userID}\t${r.timestamp}\t${r.status}\t1\t0\t0\t0`).join('\n');
-      await sendPunchLogs(devId, attlogBody).catch(e => log(`❌ FKWEB TSV fwd: ${e.message}`));
-    }
-    res.send(`OK: ${records.length}`);
+    drainFkwebQueue().catch(() => {});
+    res.status(200).json({ result: 0 });
     return;
   }
 
-  log(`📡 FKWEB unknown request_code=${requestCode} — ACK`);
-  res.send('OK');
+  log(`📡 FKWEB unknown code="${requestCode}" — ACK 200`);
+  res.status(200).json({ result: 0 });
 }
+
 
 // FKWEB GET — device handshake (like ADMS GET /iclock/cdata)
 app.get('/fkweb', (req, res) => {

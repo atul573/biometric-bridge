@@ -651,6 +651,37 @@ app.post("/admin/clear-device-log", async (req, res) => {
   });
 });
 
+// ── Admin: clear server-side dedup set (unblocks stuck device retransmit loop) ──
+// POST /admin/clear-dedup          → clears ALL dedup keys (use after device log clear)
+// POST /admin/clear-dedup/:key     → clears one specific key (format: userID|timestamp)
+app.post('/admin/clear-dedup', (req, res) => {
+  const count = state.processedTransIDs.size;
+  state.processedTransIDs.clear();
+  lastGlogRaw = null;
+  log(`🗑️ Admin: Cleared ${count} dedup keys — server ready for fresh records`);
+  res.json({ success: true, cleared: count, message: 'All dedup keys cleared. Next device push will be forwarded.' });
+});
+
+app.post('/admin/clear-dedup-key', (req, res) => {
+  const { userID, timestamp } = req.body;
+  if (!userID || !timestamp) return res.json({ success: false, message: 'Send {userID, timestamp} in body' });
+  const key = `fkweb|${userID}|${timestamp}`;
+  const existed = state.processedTransIDs.has(key);
+  state.processedTransIDs.delete(key);
+  log(`🗑️ Admin: Removed dedup key ${key} (existed=${existed})`);
+  res.json({ success: true, key, existed });
+});
+
+// ── Admin: drain the FIFO queue status ──
+app.get('/admin/queue', (req, res) => {
+  res.json({
+    queueLength: fkwebQueue.length,
+    queue: fkwebQueue,
+    dedupSize: state.processedTransIDs.size,
+    lastGlog: lastGlogRaw,
+  });
+});
+
 // ═══════════════════════════════════════════════════════════════════
 // FKWEB MODE — Mantra BioFace HTTP Push ("fkweb" Server-Client Mode)
 // Generalized: works with Mantra, ZKTeco rebrands, and any fkweb device.

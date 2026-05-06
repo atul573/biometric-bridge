@@ -721,21 +721,31 @@ async function handleFkwebRequest(req, res) {
       log(`❌ FKWEB raw hex: ${rawBuf.toString('hex')}`);
     }
 
-    res.send('OK');
+    // Send proper JSON ACK — tells device this glog record is received and queue can advance
+    res.json({ result: 0, res_code: 'realtime_glog', trans_id: transId || '0' });
     return;
   }
 
-  // ── realtime_enroll_data: fingerprint template — just ACK ──
+  // ── realtime_enroll_data: fingerprint template — ACK with JSON ──
   if (requestCode === 'realtime_enroll_data') {
-    log(`📡 FKWEB enroll data (fingerprint template) ${rawBuf.length} bytes — ACK only`);
-    res.send('OK');
+    log(`📡 FKWEB enroll data (fingerprint template) ${rawBuf.length} bytes — ACK`);
+    res.json({ result: 0, res_code: 'realtime_enroll_data' });
     return;
   }
 
-  // ── receive_cmd: device processed our command ──
+  // ── receive_cmd: device is polling for pending server commands ──
+  // Parse the device info and respond with empty command list so device knows nothing is pending
   if (requestCode === 'receive_cmd') {
-    log(`📡 FKWEB receive_cmd transId=${transId} — ACK`);
-    res.send('OK');
+    try {
+      const jsonStart = rawBuf.indexOf(0x7B);
+      const cmdInfo = jsonStart >= 0 ? JSON.parse(rawBuf.slice(jsonStart).toString('utf8')) : {};
+      log(`📡 FKWEB receive_cmd transId=${transId} fk_time=${cmdInfo.fk_time || '?'} firmware=${cmdInfo.fk_info?.firmware || '?'}`);
+      // Update device state
+      state.devices[devId] = { ...(state.devices[devId] || {}), lastSeen: new Date().toISOString(), ip: req.ip, mode: 'fkweb', firmware: cmdInfo.fk_info?.firmware };
+      state.deviceSN = devId;
+    } catch (_) {}
+    // Respond with empty command list — tells device no commands pending, proceed normally
+    res.json({ result: 0, res_code: 'receive_cmd', trans_id: transId, fk_cmd: [] });
     return;
   }
 

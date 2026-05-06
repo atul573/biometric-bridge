@@ -687,8 +687,10 @@ const tcpServer = net.createServer((socket) => {
     // This is the critical fix: device expects raw 0x06
     // ══════════════════════════════════════════════════════
     try {
-      socket.write(Buffer.from('{"status":1}'));
-      log(`✅ ACK {"status":1} sent IMMEDIATELY to ${remote}`);
+      // Research shows: device needs Connection:close to finalize transaction
+      // Send OK and immediately end the socket to signal completion
+      socket.end(Buffer.from('OK'));
+      log(`✅ ACK "OK" sent + socket.end() to ${remote}`);
     } catch (e) {
       log(`⚠️ Failed to send ACK: ${e.message}`);
     }

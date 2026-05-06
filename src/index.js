@@ -840,7 +840,107 @@ tcpServer.listen(TCP_PORT, "0.0.0.0", () => {
   log(`🔌 TCP server listening on port ${TCP_PORT}`);
 });
 
-// WebSocket server on port 1019 (device WebSocket mode)
+// WebSocket server on port 1019 (legacy)
 wsServer1018.listen(1019, "0.0.0.0", () => {
   log(`🌐 WebSocket server listening on port 1019`);
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// WebSocket server on port 7788 — Mantra BioFace "WebSocket" mode
+// Device config: Server-Client Mode = WebSocket, Host=168.144.119.199, Port=7788
+// JSON protocol: device sends { cmd, sn, data } — server replies { Return:"True" }
+// ═══════════════════════════════════════════════════════════════════
+const wsServer7788 = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('BioFace WS Bridge OK');
+});
+const wss7788 = new WebSocketServer({ server: wsServer7788 });
+
+wss7788.on('connection', (ws, req) => {
+  const remote = req.socket.remoteAddress + ':' + req.socket.remotePort;
+  log(`🌐 WS7788 CONNECTION from ${remote}`);
+  log(`🌐 WS7788 URL: ${req.url} | Headers: ${JSON.stringify(req.headers)}`);
+
+  // Send initial handshake expected by Mantra WebSocket firmware
+  try {
+    ws.send(JSON.stringify({ Return: "True", status: 1 }));
+    log(`🌐 WS7788 initial handshake sent`);
+  } catch (e) {
+    log(`⚠️ WS7788 handshake failed: ${e.message}`);
+  }
+
+  ws.on('message', async (data, isBinary) => {
+    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+    const text = buf.toString('utf8');
+    log(`🌐 WS7788 MESSAGE (${buf.length} bytes): ${text.substring(0, 300)}`);
+
+    // Try JSON parse first (WebSocket mode sends JSON)
+    try {
+      const json = JSON.parse(text);
+      log(`🌐 WS7788 JSON cmd=${json.cmd || json.Cmd || 'unknown'} sn=${json.sn || json.SN || ''}`);
+
+      const cmd = (json.cmd || json.Cmd || '').toLowerCase();
+
+      if (cmd === 'reg' || cmd === 'register' || cmd === 'connect') {
+        // Device registration/handshake
+        ws.send(JSON.stringify({ Return: "True", status: 1, cmd: 'reg' }));
+        log(`🌐 WS7788 REG ACK sent`);
+
+      } else if (cmd === 'sendlog' || cmd === 'attlog' || json.AttLog || json.attLog) {
+        // Attendance log push
+        const logs = json.data || json.AttLog || json.attLog || [];
+        const entries = Array.isArray(logs) ? logs : [logs];
+        log(`🌐 WS7788 ATTENDANCE DATA: ${JSON.stringify(entries)}`);
+
+        for (const entry of entries) {
+          const userID = String(entry.Pin || entry.UserID || entry.userId || entry.pin || '');
+          const timestamp = entry.Time || entry.time || entry.Timestamp || '';
+          const status = entry.Status || entry.status || 'Unknown';
+          const verifyMode = entry.Verify || entry.verify || 'Unknown';
+
+          if (userID && timestamp) {
+            log(`📋 WS7788 ATTENDANCE: User ${userID} | ${timestamp} | ${status}`);
+            const dedupKey = `ws|${userID}|${timestamp}`;
+            if (!processedTransIDs.has(dedupKey)) {
+              processedTransIDs.add(dedupKey);
+              try {
+                await forwardToAimify([{ userID, timestamp, status, verifyMode, source: 'websocket' }]);
+              } catch (err) {
+                log(`❌ WS7788 forward error: ${err.message}`);
+              }
+            } else {
+              log(`⏭️ WS7788 Duplicate ${dedupKey} — skipping`);
+            }
+          }
+        }
+        ws.send(JSON.stringify({ Return: "True", status: 1, cmd: 'sendlog' }));
+
+      } else if (cmd === 'heartbeat' || cmd === 'ping') {
+        ws.send(JSON.stringify({ Return: "True", status: 1, cmd: 'heartbeat' }));
+
+      } else {
+        // Unknown command — ACK it anyway
+        log(`🌐 WS7788 UNKNOWN cmd: ${JSON.stringify(json)}`);
+        ws.send(JSON.stringify({ Return: "True", status: 1 }));
+      }
+
+    } catch (e) {
+      // Not JSON — check if XML (fallback to TCP mode processing)
+      if (text.includes('<Message>') || text.includes('</Message>')) {
+        log(`🌐 WS7788 XML format received (TCP protocol over WS)`);
+        ws.send(Buffer.from('OK\r\n'));
+        processMantraMessage(buf, remote).catch(err => log(`❌ WS7788 XML error: ${err.message}`));
+      } else {
+        log(`🌐 WS7788 UNKNOWN format (not JSON/XML): ${text.substring(0, 100)}`);
+        ws.send(JSON.stringify({ Return: "True", status: 1 }));
+      }
+    }
+  });
+
+  ws.on('close', (code) => log(`🌐 WS7788 DISCONNECTED: ${remote} (code=${code})`));
+  ws.on('error', (err) => log(`❌ WS7788 ERROR: ${err.message}`));
+});
+
+wsServer7788.listen(7788, "0.0.0.0", () => {
+  log(`🌐 WebSocket server listening on port 7788 (BioFace WS mode)`);
 });

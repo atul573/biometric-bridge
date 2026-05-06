@@ -110,11 +110,21 @@ function buildTimestamp(parsed) {
 
 async function processMantraMessage(data, socket, remoteAddr) {
   const raw = data.toString("utf8");
+
+  // Debug: log first 100 chars hex to see exact bytes
+  log(`🔍 DEBUG raw bytes (first 50): ${data.slice(0, 50).toString("hex")}`);
+
   const parsed = parseMantraXML(raw);
+
+  // Debug: log what we parsed
+  log(`🔍 DEBUG parsed keys: ${JSON.stringify(Object.keys(parsed))}`);
+  log(`🔍 DEBUG parsed: ${JSON.stringify(parsed).substring(0, 500)}`);
 
   // Validate required fields
   if (!parsed.TransID || !parsed.DeviceSerialNo) {
-    log(`⚠️ Invalid XML message — missing TransID or SerialNo`);
+    log(`⚠️ Invalid XML message — missing TransID (${parsed.TransID}) or SerialNo (${parsed.DeviceSerialNo})`);
+    // Try alternate key names
+    log(`⚠️ All keys: ${Object.keys(parsed).join(", ")}`);
     return;
   }
 

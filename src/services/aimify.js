@@ -51,18 +51,27 @@ export async function sendPunchLogs(serialNumber, records) {
   }
 
   try {
-    // Build tab-delimited body matching ZKTeco ATTLOG format:
-    // PIN\tTimestamp\tStatus\tVerifyMode\tWorkCode\tReserved1\tReserved2
-    const body = records.map(r => r.rawLine).join("\n");
+    // Accept either:
+    //  - a pre-built tab-delimited string (from fkweb/TCP handlers)
+    //  - an array of { rawLine } objects (legacy format)
+    let body;
+    if (typeof records === "string") {
+      body = records;
+    } else if (Array.isArray(records)) {
+      body = records.map(r => r.rawLine || r).join("\n");
+    } else {
+      throw new Error("sendPunchLogs: records must be a string or array");
+    }
 
+    const lineCount = body.split("\n").filter(l => l.trim()).length;
     const url = `/iclock/cdata?SN=${encodeURIComponent(serialNumber)}&table=ATTLOG`;
 
-    console.log(`[Aimify] 📤 Forwarding ${records.length} record(s) to ${BASE}${url}`);
+    console.log(`[Aimify] 📤 Forwarding ${lineCount} record(s) to ${BASE}${url}`);
     console.log(`[Aimify]    Body: ${body}`);
 
     const res = await textClient.post(url, body);
 
-    console.log(`[Aimify] ✅ ${records.length} punch(es) forwarded → ${res.status} ${res.data}`);
+    console.log(`[Aimify] ✅ ${lineCount} punch(es) forwarded → ${res.status} ${res.data}`);
     return res.data;
   } catch (err) {
     const errMsg = err.response

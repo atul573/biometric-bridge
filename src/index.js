@@ -274,6 +274,7 @@ const app = express();
 app.use(express.json({ limit: "1mb" }));               // Minop JSON protocol
 app.use(express.text({ type: "text/*", limit: "1mb" })); // iClock text protocol  
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
+app.use(express.raw({ type: "application/octet-stream", limit: "2mb" })); // fkweb binary protocol
 app.disable("x-powered-by");
 
 // ── Request logger ──
@@ -661,27 +662,93 @@ app.post("/admin/clear-device-log", async (req, res) => {
 async function handleFkwebRequest(req, res) {
   const method = req.method;
   const url = req.originalUrl;
-  const body = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
-  const query = JSON.stringify(req.query);
-  const headers = JSON.stringify(req.headers);
+  const requestCode = req.headers['request_code'] || '';
+  const devId = req.headers['dev_id'] || req.query.dev_id || 'unknown';
+  const transId = req.headers['trans_id'] || '';
 
-  log(`📡 FKWEB ${method} ${url}`);
-  log(`📡 FKWEB Query: ${query}`);
-  log(`📡 FKWEB Headers: ${headers}`);
-  log(`📡 FKWEB Body (${body.length} bytes): ${body.substring(0, 500)}`);
+  // Get raw binary body (Buffer) or text body
+  const rawBuf = Buffer.isBuffer(req.body) ? req.body
+               : typeof req.body === 'string' ? Buffer.from(req.body)
+               : Buffer.alloc(0);
 
-  // Try to parse XML body (same as TCP mode)
-  if (body.includes('<Message>') || body.includes('</Message>')) {
-    log(`📡 FKWEB XML detected — processing as attendance`);
-    await processMantraMessage(Buffer.from(body), req.ip);
-    res.send('OK\r\n');
+  log(`📡 FKWEB ${method} ${url} | request_code=${requestCode} | dev_id=${devId} | ${rawBuf.length} bytes`);
+  log(`📡 FKWEB Raw HEX: ${rawBuf.toString('hex').substring(0, 120)}`);
+  log(`📡 FKWEB Raw UTF8: ${rawBuf.toString('utf8', 0, Math.min(rawBuf.length, 200))}`);
+
+  // ── realtime_glog: attendance punch event ──
+  if (requestCode === 'realtime_glog') {
+    log(`📡 FKWEB ATTENDANCE LOG received (${rawBuf.length} bytes) from dev=${devId}`);
+
+    // Try to decode as UTF-8 text first (some firmware versions use text)
+    const text = rawBuf.toString('utf8');
+    log(`📡 FKWEB glog text: ${text}`);
+
+    // Try null-terminated string fields — common format:
+    // [pin\0][timestamp\0][verify_type][status][...padding...]
+    // Split on null bytes to find strings
+    const nullParts = text.split('\x00').map(s => s.trim()).filter(s => s.length > 0);
+    log(`📡 FKWEB glog null-split parts: ${JSON.stringify(nullParts)}`);
+
+    // Look for timestamp pattern YYYY-MM-DD HH:MM:SS
+    const tsMatch = text.match(/(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/);
+    const timestamp = tsMatch ? tsMatch[1] : null;
+
+    // First non-empty null-split part before timestamp is usually the UserID
+    let userID = null;
+    for (const part of nullParts) {
+      if (/^\d+$/.test(part) && part.length <= 10) { userID = part; break; }
+    }
+
+    if (userID && timestamp) {
+      log(`📋 FKWEB ATTENDANCE: User ${userID} | ${timestamp} | dev=${devId}`);
+      const dedupKey = `fkweb|${userID}|${timestamp}`;
+      if (!state.processedTransIDs.has(dedupKey)) {
+        state.processedTransIDs.add(dedupKey);
+        try {
+          const attlogBody = `${userID}\t${timestamp}\t0\t1\t0\t0\t0`;
+          await sendPunchLogs(devId, attlogBody);
+          state.forwarded++;
+          state.lastForward = new Date().toISOString();
+          log(`✅ FKWEB: Forwarded User ${userID} @ ${timestamp} to Aimify`);
+        } catch (e) {
+          log(`❌ FKWEB forward failed: ${e.message}`);
+        }
+      } else {
+        log(`⏭️ FKWEB duplicate ${dedupKey} — skipping`);
+      }
+    } else {
+      log(`⚠️ FKWEB could not parse glog — userID=${userID} timestamp=${timestamp}`);
+      log(`⚠️ FKWEB full hex dump: ${rawBuf.toString('hex')}`);
+    }
+
+    res.send('OK');
     return;
   }
 
-  // Try tab-separated ATTLOG format (same as ADMS/HTTP mode)
-  if (body.includes('\t')) {
-    const sn = req.query.SN || req.query.sn || req.query.serialNo || 'unknown';
-    const lines = body.split('\n').filter(l => l.trim());
+  // ── realtime_enroll_data: fingerprint template — just ACK ──
+  if (requestCode === 'realtime_enroll_data') {
+    log(`📡 FKWEB enroll data (fingerprint template) ${rawBuf.length} bytes — ACK only`);
+    res.send('OK');
+    return;
+  }
+
+  // ── receive_cmd: device processed our command ──
+  if (requestCode === 'receive_cmd') {
+    log(`📡 FKWEB receive_cmd transId=${transId} — ACK`);
+    res.send('OK');
+    return;
+  }
+
+  // ── Generic: log body and ACK ──
+  const bodyText = rawBuf.toString('utf8');
+  if (bodyText.includes('<Message>') || bodyText.includes('</Message>')) {
+    await processMantraMessage(rawBuf, req.ip);
+    res.send('OK\r\n');
+    return;
+  }
+  if (bodyText.includes('\t')) {
+    const sn = devId;
+    const lines = bodyText.split('\n').filter(l => l.trim());
     const records = [];
     for (const line of lines) {
       const parts = line.split('\t');
@@ -689,51 +756,22 @@ async function handleFkwebRequest(req, res) {
         const userID = parts[0].trim();
         const timestamp = parts[1].trim();
         const status = parts[2]?.trim() || '0';
-        const verify = parts[3]?.trim() || '0';
         const dedupKey = `fkweb|${userID}|${timestamp}`;
         if (!state.processedTransIDs.has(dedupKey)) {
           state.processedTransIDs.add(dedupKey);
-          log(`📋 FKWEB ATTENDANCE: User ${userID} | ${timestamp} | status=${status}`);
-          records.push({ userID, timestamp, status, verify });
-        } else {
-          log(`⏭️ FKWEB duplicate ${dedupKey} — skipping`);
+          records.push({ userID, timestamp, status });
         }
       }
     }
     if (records.length > 0) {
-      try {
-        const attlogBody = records.map(r => `${r.userID}\t${r.timestamp}\t${r.status}\t${r.verify}\t0\t0\t0`).join('\n');
-        await sendPunchLogs(sn, attlogBody);
-        state.forwarded += records.length;
-        log(`✅ FKWEB: Forwarded ${records.length} record(s) to Aimify`);
-      } catch (e) {
-        log(`❌ FKWEB forward failed: ${e.message}`);
-      }
+      const attlogBody = records.map(r => `${r.userID}\t${r.timestamp}\t${r.status}\t1\t0\t0\t0`).join('\n');
+      await sendPunchLogs(devId, attlogBody).catch(e => log(`❌ FKWEB TSV fwd: ${e.message}`));
     }
     res.send(`OK: ${records.length}`);
     return;
   }
 
-  // Try JSON body
-  try {
-    const json = JSON.parse(body);
-    log(`📡 FKWEB JSON: ${JSON.stringify(json)}`);
-    // Handle common JSON attendance fields
-    const userID = String(json.pin || json.userId || json.UserID || json.Pin || '');
-    const timestamp = json.time || json.Time || json.timestamp || json.Timestamp || '';
-    if (userID && timestamp) {
-      const dedupKey = `fkweb|${userID}|${timestamp}`;
-      if (!state.processedTransIDs.has(dedupKey)) {
-        state.processedTransIDs.add(dedupKey);
-        log(`📋 FKWEB JSON ATTENDANCE: User ${userID} | ${timestamp}`);
-        await forwardToAimify([{ userID, timestamp, status: json.status || '0', source: 'fkweb' }]);
-      }
-    }
-    res.json({ Return: 'True', status: 1 });
-    return;
-  } catch (_) {}
-
-  // Unknown format — just ACK it
+  log(`📡 FKWEB unknown request_code=${requestCode} — ACK`);
   res.send('OK');
 }
 

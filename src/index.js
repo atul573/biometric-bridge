@@ -1,4 +1,5 @@
 import express from "express";
+import net from "net";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -7,10 +8,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ═══════════════════════════════════════════════════════════════════
 // MORX BioFace-MSD1K — Biometric Bridge (Cloud Edition)
-// Receives attendance data via ZKTeco PUSH protocol (iclock)
+// Dual-mode: HTTP (iclock) + Raw TCP (eBioServer/ZK protocol)
 // ═══════════════════════════════════════════════════════════════════
 
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 80;
+const TCP_PORT = process.env.TCP_PORT || 1018;
 
 // In-memory store (will reset on redeploy — fine for now)
 const state = {
@@ -34,7 +36,9 @@ const app = express();
 app.use(express.static(path.join(__dirname, "ui")));
 
 // Parse text bodies (ZKTeco sends text/plain)
-app.use(express.text({ type: "*/*", limit: "5mb" }));
+app.use(express.text({ type: "text/*", limit: "5mb" }));
+app.use(express.urlencoded({ extended: true }));
+app.use(express.raw({ type: "*/*", limit: "5mb" }));
 
 // ── API: State for UI dashboard ──
 app.get("/api/state", (req, res) => {
@@ -43,7 +47,7 @@ app.get("/api/state", (req, res) => {
 
 // ── Health check ──
 app.get("/health", (req, res) => {
-  res.json({ status: "ok", uptime: process.uptime(), heartbeats: state.heartbeats });
+  res.json({ status: "ok", uptime: process.uptime(), heartbeats: state.heartbeats, tcpConnections: state.tcpConnections || 0 });
 });
 
 // ── Log EVERY request ──
@@ -54,14 +58,21 @@ app.use((req, res, next) => {
     method: req.method,
     path: req.originalUrl,
     from: from,
-    bodyPreview: typeof req.body === "string" ? req.body.substring(0, 500) : "",
+    bodyPreview: typeof req.body === "string" ? req.body.substring(0, 500) : Buffer.isBuffer(req.body) ? req.body.toString("hex").substring(0, 200) : "",
   };
   state.rawHits.push(hit);
   if (state.rawHits.length > 500) state.rawHits.shift();
 
   log(`${req.method} ${req.originalUrl} from=${from}`);
   if (req.body) {
-    const bodyStr = typeof req.body === "string" ? req.body : JSON.stringify(req.body);
+    let bodyStr;
+    if (Buffer.isBuffer(req.body)) {
+      bodyStr = `[BINARY ${req.body.length} bytes] HEX: ${req.body.toString("hex").substring(0, 100)}`;
+    } else if (typeof req.body === "string") {
+      bodyStr = req.body;
+    } else {
+      bodyStr = JSON.stringify(req.body);
+    }
     if (bodyStr.trim() && bodyStr !== "{}") {
       log(`  Body: ${bodyStr.substring(0, 300)}`);
     }
@@ -144,12 +155,72 @@ app.all("*", (req, res) => {
   res.send("OK");
 });
 
-// ── Start ──
+// ═══════════════════════════════════════════════════════════════════
+// RAW TCP SERVER (for eBioServer/ZKTeco TCP protocol on port 1018)
+// ═══════════════════════════════════════════════════════════════════
+state.tcpConnections = 0;
+
+const tcpServer = net.createServer((socket) => {
+  state.tcpConnections++;
+  const remote = `${socket.remoteAddress}:${socket.remotePort}`;
+  log(`🔌 TCP CONNECTION #${state.tcpConnections} from ${remote}`);
+
+  const hit = {
+    time: new Date().toISOString(),
+    method: "TCP",
+    path: `TCP:${TCP_PORT}`,
+    from: remote,
+    bodyPreview: "TCP connection opened",
+  };
+  state.rawHits.push(hit);
+
+  socket.on("data", (data) => {
+    const hex = data.toString("hex");
+    const ascii = data.toString("ascii").replace(/[^\x20-\x7E]/g, ".");
+    log(`📦 TCP DATA from ${remote} (${data.length} bytes)`);
+    log(`  HEX: ${hex.substring(0, 200)}`);
+    log(`  ASCII: ${ascii.substring(0, 200)}`);
+
+    state.rawHits.push({
+      time: new Date().toISOString(),
+      method: "TCP-DATA",
+      path: `TCP:${TCP_PORT}`,
+      from: remote,
+      bodyPreview: `[${data.length}B] ${ascii.substring(0, 200)}`,
+    });
+
+    // Try to parse as HTTP (some devices send HTTP over non-standard ports)
+    const text = data.toString();
+    if (text.includes("GET ") || text.includes("POST ")) {
+      log(`  ℹ️ Looks like HTTP over TCP! Content: ${text.substring(0, 300)}`);
+    }
+
+    // Echo back OK to keep the device happy
+    try {
+      socket.write("OK\n");
+    } catch (e) {}
+  });
+
+  socket.on("close", () => {
+    log(`🔌 TCP DISCONNECTED: ${remote}`);
+  });
+
+  socket.on("error", (err) => {
+    log(`❌ TCP ERROR from ${remote}: ${err.message}`);
+  });
+});
+
+// ── Start both servers ──
 app.listen(PORT, "0.0.0.0", () => {
   console.log("\n" + "═".repeat(50));
   console.log("  🌉 BIOMETRIC BRIDGE (Cloud)");
   console.log("═".repeat(50));
-  console.log(`  Listening on port ${PORT}`);
+  console.log(`  HTTP server on port ${PORT}`);
+  console.log(`  TCP  server on port ${TCP_PORT}`);
   console.log(`  Dashboard: /`);
   console.log("═".repeat(50) + "\n");
+});
+
+tcpServer.listen(TCP_PORT, "0.0.0.0", () => {
+  log(`🔌 TCP server listening on port ${TCP_PORT}`);
 });

@@ -681,6 +681,14 @@ const tcpServer = net.createServer((socket) => {
     }
 
     log(`📦 TCP DATA from ${remote} (${buffer.length} bytes)`);
+    log(`🔬 RAW HEX (first 80): ${buffer.toString('hex').substring(0, 160)}`);
+    log(`🔬 RAW TEXT: ${text.substring(0, 600)}`);
+    // Check what's AFTER </Message>
+    const endIdx = text.indexOf('</Message>');
+    if (endIdx >= 0) {
+      const after = buffer.slice(endIdx + 10);
+      log(`🔬 AFTER </Message>: ${after.length} bytes hex=${after.toString('hex')}`);
+    }
 
     // ══════════════════════════════════════════════════════
     // STEP 1: Send ACK IMMEDIATELY — before ANY processing

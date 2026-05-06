@@ -160,11 +160,16 @@ async function processMantraMessage(data, socket, remoteAddr) {
   };
   state.deviceSN = serialNo;
 
-  // ── EXPERIMENT: Try NO response at all ──
-  // Some Mantra devices interpret ANY response as an error
-  // and only move to next record when NO response is sent.
-  // If this works, we'll see different TransIDs on the same connection.
-  log(`🧪 EXPERIMENT: NOT sending ACK for TransID ${transID} — watching device behavior`);
+  // ── Send ACK with correct protocol format ──
+  // PROTOCOL: Double null-byte terminator + CRLF line endings matching device format
+  try {
+    const ack = buildAckXML(transID);
+    log(`📤 ACK sent: ${ack.length} bytes, hex: ${ack.toString('hex')}`);
+    socket.write(ack);
+    log(`✅ ACK sent for TransID ${transID}`);
+  } catch (e) {
+    log(`⚠️ Failed to send ACK: ${e.message}`);
+  }
 
   // ── Always send heartbeat to Aimify (even on duplicates) ──
   state.heartbeats++;

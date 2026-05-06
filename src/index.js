@@ -650,11 +650,118 @@ app.post("/admin/clear-device-log", async (req, res) => {
   });
 });
 
-// ── Catch-all ──
-app.all("*", (req, res) => {
-  log(`❓ CATCH-ALL: ${req.method} ${req.originalUrl}`);
-  res.send("OK");
+// ═══════════════════════════════════════════════════════════════════
+// FKWEB MODE — Mantra BioFace HTTP Push ("fkweb" Server-Client Mode)
+// Device config: Server-Client Mode = fkweb
+//                Web Server URL = http://168.144.119.199/fkweb/attendance
+//                             OR http://168.144.119.199/fkweb/
+// Protocol: HTTP POST with XML or form body, responds OK
+// ═══════════════════════════════════════════════════════════════════
+
+async function handleFkwebRequest(req, res) {
+  const method = req.method;
+  const url = req.originalUrl;
+  const body = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+  const query = JSON.stringify(req.query);
+  const headers = JSON.stringify(req.headers);
+
+  log(`📡 FKWEB ${method} ${url}`);
+  log(`📡 FKWEB Query: ${query}`);
+  log(`📡 FKWEB Headers: ${headers}`);
+  log(`📡 FKWEB Body (${body.length} bytes): ${body.substring(0, 500)}`);
+
+  // Try to parse XML body (same as TCP mode)
+  if (body.includes('<Message>') || body.includes('</Message>')) {
+    log(`📡 FKWEB XML detected — processing as attendance`);
+    await processMantraMessage(Buffer.from(body), req.ip);
+    res.send('OK\r\n');
+    return;
+  }
+
+  // Try tab-separated ATTLOG format (same as ADMS/HTTP mode)
+  if (body.includes('\t')) {
+    const sn = req.query.SN || req.query.sn || req.query.serialNo || 'unknown';
+    const lines = body.split('\n').filter(l => l.trim());
+    const records = [];
+    for (const line of lines) {
+      const parts = line.split('\t');
+      if (parts.length >= 2) {
+        const userID = parts[0].trim();
+        const timestamp = parts[1].trim();
+        const status = parts[2]?.trim() || '0';
+        const verify = parts[3]?.trim() || '0';
+        const dedupKey = `fkweb|${userID}|${timestamp}`;
+        if (!state.processedTransIDs.has(dedupKey)) {
+          state.processedTransIDs.add(dedupKey);
+          log(`📋 FKWEB ATTENDANCE: User ${userID} | ${timestamp} | status=${status}`);
+          records.push({ userID, timestamp, status, verify });
+        } else {
+          log(`⏭️ FKWEB duplicate ${dedupKey} — skipping`);
+        }
+      }
+    }
+    if (records.length > 0) {
+      try {
+        const attlogBody = records.map(r => `${r.userID}\t${r.timestamp}\t${r.status}\t${r.verify}\t0\t0\t0`).join('\n');
+        await sendPunchLogs(sn, attlogBody);
+        state.forwarded += records.length;
+        log(`✅ FKWEB: Forwarded ${records.length} record(s) to Aimify`);
+      } catch (e) {
+        log(`❌ FKWEB forward failed: ${e.message}`);
+      }
+    }
+    res.send(`OK: ${records.length}`);
+    return;
+  }
+
+  // Try JSON body
+  try {
+    const json = JSON.parse(body);
+    log(`📡 FKWEB JSON: ${JSON.stringify(json)}`);
+    // Handle common JSON attendance fields
+    const userID = String(json.pin || json.userId || json.UserID || json.Pin || '');
+    const timestamp = json.time || json.Time || json.timestamp || json.Timestamp || '';
+    if (userID && timestamp) {
+      const dedupKey = `fkweb|${userID}|${timestamp}`;
+      if (!state.processedTransIDs.has(dedupKey)) {
+        state.processedTransIDs.add(dedupKey);
+        log(`📋 FKWEB JSON ATTENDANCE: User ${userID} | ${timestamp}`);
+        await forwardToAimify([{ userID, timestamp, status: json.status || '0', source: 'fkweb' }]);
+      }
+    }
+    res.json({ Return: 'True', status: 1 });
+    return;
+  } catch (_) {}
+
+  // Unknown format — just ACK it
+  res.send('OK');
+}
+
+// FKWEB GET — device handshake (like ADMS GET /iclock/cdata)
+app.get('/fkweb', (req, res) => {
+  const sn = req.query.SN || req.query.sn || req.query.serialNo || 'unknown';
+  log(`📡 FKWEB GET /fkweb handshake from SN=${sn}`);
+  const serverTime = new Date().toISOString().replace('T', ' ').substring(0, 19);
+  res.send(`OK\r\nServerTime=${serverTime}\r\nRealtime=1\r\nEncrypt=0\r\n`);
 });
+
+// All fkweb POST paths
+app.all('/fkweb*', handleFkwebRequest);
+app.all('/fk/*', handleFkwebRequest);
+app.all('/attendance*', handleFkwebRequest);
+app.all('/push*', handleFkwebRequest);
+app.all('/record*', handleFkwebRequest);
+
+// ── Catch-all — log full details for any unknown device requests ──
+app.all('*', (req, res) => {
+  const body = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+  log(`❓ CATCH-ALL: ${req.method} ${req.originalUrl}`);
+  if (body && body !== '{}' && body.length > 0) {
+    log(`❓ CATCH-ALL Body (${body.length}b): ${body.substring(0, 300)}`);
+  }
+  res.send('OK');
+});
+
 
 // ═══════════════════════════════════════════════════════════════════
 // RAW TCP SERVER (Mantra eBioServer XML protocol on port 1018)

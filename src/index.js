@@ -60,8 +60,11 @@ app.use((req, res, next) => {
   if (state.rawHits.length > 500) state.rawHits.shift();
 
   log(`${req.method} ${req.originalUrl} from=${from}`);
-  if (req.body && String(req.body).trim()) {
-    log(`  Body: ${String(req.body).substring(0, 300)}`);
+  if (req.body) {
+    const bodyStr = typeof req.body === "string" ? req.body : JSON.stringify(req.body);
+    if (bodyStr.trim() && bodyStr !== "{}") {
+      log(`  Body: ${bodyStr.substring(0, 300)}`);
+    }
   }
   next();
 });

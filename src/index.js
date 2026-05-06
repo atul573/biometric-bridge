@@ -663,6 +663,7 @@ app.post("/admin/clear-device-log", async (req, res) => {
 //           Dedup (by userID+timestamp) prevents double-posting to Aimify.
 const fkwebQueue    = [];  // [{userID,timestamp,ioMode,verifyMode,devId,key}]
 let   fkwebFlushing = false;
+let   lastGlogRaw    = null;  // track last glog for targeted delete in receive_cmd
 
 async function drainFkwebQueue() {
   if (fkwebFlushing) return;
@@ -729,6 +730,7 @@ async function handleFkwebRequest(req, res) {
       const dedupKey   = `fkweb|${userID}|${timestamp}`;
 
       log(`📋 GLOG: User=${userID} time=${timestamp} io=${ioMode} verify=${verifyMode}`);
+      lastGlogRaw = glog;  // save for receive_cmd targeted delete
 
       if (!state.processedTransIDs.has(dedupKey)) {
         state.processedTransIDs.add(dedupKey);
@@ -742,8 +744,11 @@ async function handleFkwebRequest(req, res) {
       log(`⚠️  GLOG parse failed | hex: ${rawBuf.toString('hex').slice(0, 80)}`);
     }
 
-    // ALWAYS ACK — minimal JSON, device checks result:0 to clear from flash
-    res.status(200).json({ result: 0 });
+    // ACK: echo full glog payload with result:0 — device checks its own fields are confirmed
+    const ackBody = glog
+      ? { result: 0, ...(glog) }       // Echo entire payload back + result:0
+      : { result: 0 };
+    res.status(200).json(ackBody);
     return;
   }
 
@@ -772,7 +777,24 @@ async function handleFkwebRequest(req, res) {
     state.heartbeats++;
     state.lastHeartbeat = new Date().toISOString();
 
-    res.status(200).json({ result: 0, res_code: 'receive_cmd', trans_id: transId, fk_cmd: [] });
+    // Build fk_cmd: if we have a last glog record, send targeted delete commands for it
+    const fkCmds = [];
+    if (lastGlogRaw && lastGlogRaw.io_time) {
+      const uid = lastGlogRaw.user_id || '';
+      const iot = lastGlogRaw.io_time || '';
+      // Try multiple command formats — device firmware may recognize one of these
+      fkCmds.push({ cmd: 'delete_att_log', user_id: uid, io_time: iot, result: 0 });
+      fkCmds.push({ cmd: 'ack_glog',       user_id: uid, io_time: iot, result: 0 });
+    }
+    const fkTime = new Date().toISOString().replace(/[-:T]/g,'').slice(0,14);
+    log(`📤 receive_cmd resp → fk_cmd=${JSON.stringify(fkCmds)}`);
+    res.status(200).json({
+      result: 0,
+      res_code: 'receive_cmd',
+      trans_id: transId,
+      fk_time: fkTime,
+      fk_cmd: fkCmds,
+    });
     return;
   }
 

@@ -62,9 +62,17 @@ function parseMantraXML(xmlString) {
   return result;
 }
 
-function buildAckXML(transID) {
-  // Match device format: single continuous XML line, null-terminated
-  return `<?xml version="1.0"?><Message><TransID>${transID}</TransID><Result>1</Result><Status>OK</Status></Message>\x00`;
+function buildAckXML(transID, serialNo) {
+  // eBioServer protocol: Response with DeviceSerialNo + TransIDs + SUCCESS
+  // This tells the device firmware to CLEAR the acknowledged record from its queue
+  const xml = '<?xml version="1.0" encoding="UTF-8"?>'
+    + '<Response>'
+    + '<DeviceSerialNo>' + (serialNo || '') + '</DeviceSerialNo>'
+    + '<TransIDs>' + transID + '</TransIDs>'
+    + '<Status>SUCCESS</Status>'
+    + '</Response>';
+  // Null-terminate like the device does
+  return Buffer.concat([Buffer.from(xml, "utf8"), Buffer.from([0x00])]);
 }
 
 /**
@@ -163,7 +171,7 @@ async function processMantraMessage(data, socket, remoteAddr) {
   // ── Send ACK with correct protocol format ──
   // PROTOCOL: Double null-byte terminator + CRLF line endings matching device format
   try {
-    const ack = buildAckXML(transID);
+    const ack = buildAckXML(transID, serialNo);
     log(`📤 ACK sent: ${ack.length} bytes, hex: ${ack.toString('hex')}`);
     socket.write(ack);
     log(`✅ ACK sent for TransID ${transID}`);

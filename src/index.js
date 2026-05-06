@@ -665,17 +665,14 @@ async function handleFkwebRequest(req, res) {
   const requestCode = req.headers['request_code'] || '';
   const devId = req.headers['dev_id'] || req.query.dev_id || 'unknown';
   const transId = req.headers['trans_id'] || '';
+  const blkNo = req.headers['blk_no'] || '';
 
   // Get raw binary body (Buffer) or text body
   const rawBuf = Buffer.isBuffer(req.body) ? req.body
                : typeof req.body === 'string' ? Buffer.from(req.body)
                : Buffer.alloc(0);
 
-  // Log ALL headers for diagnosis
-  log(`📡 FKWEB ${method} ${url} | request_code=${requestCode} | dev_id=${devId} | trans_id=${transId} | ${rawBuf.length} bytes`);
-  log(`📡 FKWEB ALL HEADERS: ${JSON.stringify(req.headers)}`);
-  log(`📡 FKWEB Raw HEX: ${rawBuf.toString('hex').substring(0, 120)}`);
-  log(`📡 FKWEB Raw UTF8: ${rawBuf.toString('utf8', 0, Math.min(rawBuf.length, 200))}`);
+  log(`📡 FKWEB ${method} ${url} | code=${requestCode} dev=${devId} trans=${transId} blk=${blkNo} | ${rawBuf.length} bytes`);
 
   // ── realtime_glog: attendance punch event ──
   if (requestCode === 'realtime_glog') {
@@ -723,20 +720,9 @@ async function handleFkwebRequest(req, res) {
       log(`❌ FKWEB raw hex: ${rawBuf.toString('hex')}`);
     }
 
-    // Try multiple ACK formats — device needs to know the record is received to delete from queue
-    // The ACK must echo back the record identifiers so device can match & clear it
-    const ackPayload = {
-      result: 0,
-      res_code: 'realtime_glog',
-      dev_id: devId,
-      trans_id: transId || '0',
-    };
-    log(`📤 FKWEB glog ACK → ${JSON.stringify(ackPayload)}`);
-    res
-      .set('Content-Type', 'application/json')
-      .set('Connection', 'keep-alive')
-      .status(200)
-      .json(ackPayload);
+    // ACK the glog — plain OK is all the device needs to know HTTP request succeeded
+    // Queue clearing happens via receive_cmd's fk_cmd response (delete command)
+    res.status(200).send('OK');
     return;
   }
 
@@ -747,19 +733,26 @@ async function handleFkwebRequest(req, res) {
     return;
   }
 
-  // ── receive_cmd: device is polling for pending server commands ──
-  // Parse the device info and respond with empty command list so device knows nothing is pending
+  // ── receive_cmd: device polls for pending server commands ──
+  // This is the QUEUE ADVANCE mechanism: respond with fk_cmd to tell device to delete sent glogs
   if (requestCode === 'receive_cmd') {
     try {
       const jsonStart = rawBuf.indexOf(0x7B);
       const cmdInfo = jsonStart >= 0 ? JSON.parse(rawBuf.slice(jsonStart).toString('utf8')) : {};
       log(`📡 FKWEB receive_cmd transId=${transId} fk_time=${cmdInfo.fk_time || '?'} firmware=${cmdInfo.fk_info?.firmware || '?'}`);
-      // Update device state
       state.devices[devId] = { ...(state.devices[devId] || {}), lastSeen: new Date().toISOString(), ip: req.ip, mode: 'fkweb', firmware: cmdInfo.fk_info?.firmware };
       state.deviceSN = devId;
     } catch (_) {}
-    // Respond with empty command list — tells device no commands pending, proceed normally
-    res.json({ result: 0, res_code: 'receive_cmd', trans_id: transId, fk_cmd: [] });
+
+    // Send fk_cmd to instruct device to delete all previously-sent glog records from flash
+    // This is the standard fkweb queue-clear mechanism — the server sends a 'clear_glog' command
+    const fkCmds = [
+      { cmd: 'clear_glog', result: 0 },        // Variant 1: clear all sent glogs
+      { cmd: 'delete_att_log', result: 0 },    // Variant 2: ZKTeco-style delete
+      { cmd: 'ack_glog', result: 0 },          // Variant 3: acknowledge glog
+    ];
+    log(`📤 FKWEB receive_cmd ACK → fk_cmd=${JSON.stringify(fkCmds)}`);
+    res.status(200).json({ result: 0, res_code: 'receive_cmd', trans_id: transId, fk_cmd: fkCmds });
     return;
   }
 

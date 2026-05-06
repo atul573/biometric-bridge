@@ -695,7 +695,7 @@ const tcpServer = net.createServer((socket) => {
     // This is the critical fix: device expects raw 0x06
     // ══════════════════════════════════════════════════════
     try {
-      // Try bare 0x06 ACK — standard ASCII ACK byte used by many Mantra/biometric protocols
+      // Send 0x06 ACK on incoming socket
       socket.write(Buffer.from([0x06]));
       log(`✅ ACK 0x06 sent to ${remote}`);
     } catch (e) {
@@ -712,6 +712,31 @@ const tcpServer = net.createServer((socket) => {
     processMantraMessage(completeMessage, remote).catch((err) => {
       log(`❌ Process error: ${err.message}`);
     });
+
+    // ══════════════════════════════════════════════════════
+    // STEP 3: Connect back to device:5005 and send DeleteLog
+    // This is how eBioServer actually clears the M50 FIFO queue
+    // ══════════════════════════════════════════════════════
+    const msgText = completeMessage.toString('utf8');
+    const deviceUID = msgText.match(/<DeviceUID>(.*?)<\/DeviceUID>/)?.[1] || '';
+    const transID = msgText.match(/<TransID>(.*?)<\/TransID>/)?.[1] || '0';
+    const deviceIP = socket.remoteAddress;
+    const deviceCmdPort = 5005;
+
+    const deleteCmd = `<?xml version="1.0"?><Message><DeviceUID>${deviceUID}</DeviceUID><TransID>${transID}</TransID><Command>DeleteLog</Command></Message>\0\0`;
+
+    setTimeout(() => {
+      const cmdSocket = new net.Socket();
+      cmdSocket.setTimeout(5000);
+      cmdSocket.connect(deviceCmdPort, deviceIP, () => {
+        log(`📤 Connected to device ${deviceIP}:${deviceCmdPort} — sending DeleteLog`);
+        cmdSocket.write(Buffer.from(deleteCmd));
+        cmdSocket.end();
+      });
+      cmdSocket.on('data', (d) => log(`📥 Device cmd response: ${d.toString('hex')}`));
+      cmdSocket.on('error', (e) => log(`⚠️ Device cmd connect failed: ${e.message}`));
+      cmdSocket.on('timeout', () => { cmdSocket.destroy(); log(`⚠️ Device cmd timeout`); });
+    }, 500);
   });
 
   socket.on("close", () => {

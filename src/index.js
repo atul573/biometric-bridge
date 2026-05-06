@@ -271,7 +271,9 @@ async function processMantraMessage(data, remoteAddr) {
 // ═══════════════════════════════════════════════════════════════════
 
 const app = express();
-app.use(express.text({ type: "*/*", limit: "1mb" }));
+app.use(express.json({ limit: "1mb" }));               // Minop JSON protocol
+app.use(express.text({ type: "text/*", limit: "1mb" })); // iClock text protocol  
+app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 app.disable("x-powered-by");
 
 // ── Request logger ──
@@ -499,6 +501,122 @@ app.post("/iclock/cdata", async (req, res) => {
 
   // CRITICAL: Responding with "OK" tells the device to CLEAR this record from its queue
   res.send("OK");
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// MINOP-COMPATIBLE API — Device pushes JSON via HTTP POST
+// This is the protocol that actually clears the device queue!
+// ═══════════════════════════════════════════════════════════════════
+
+// ── Heartbeat / Transactional Response ──
+app.post("/api/DeviceApi/getAttendance", (req, res) => {
+  const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+  const dvcSrNo = body?.dvcSrNo || 'unknown';
+  const dvcTime = body?.dvcTime || new Date().toISOString();
+
+  log(`📡 MINOP HEARTBEAT: Device ${dvcSrNo} time=${dvcTime}`);
+
+  state.devices[dvcSrNo] = {
+    ...state.devices[dvcSrNo],
+    lastSeen: new Date().toISOString(),
+    ip: req.ip,
+    terminalType: 'Minop-HTTP',
+  };
+  state.deviceSN = dvcSrNo;
+  state.heartbeats++;
+  state.lastHeartbeat = new Date().toISOString();
+
+  sendHeartbeat(dvcSrNo, req.ip).catch(() => {});
+
+  res.json({ status: 1 });
+});
+
+// ── Push Response — receives attendance records and ACKs each txnId ──
+app.post("/api/DeviceApi/saveAttendance", async (req, res) => {
+  const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+  const trans = body?.trans || [];
+
+  log(`📥 MINOP PUSH: ${trans.length} record(s) received`);
+
+  const transStatus = [];
+  const newRecords = [];
+
+  for (const t of trans) {
+    const txnId = t.txnId;
+    const punchId = String(t.punchId || '');
+    const timestamp = t.txnDateTime || '';
+    const mode = (t.mode || 'IN').toUpperCase();
+    const dvcId = t.dvcId || 1;
+    const dvcIP = t.dvcIP || req.ip;
+
+    log(`📋 MINOP: txnId=${txnId} punch=${punchId} time=${timestamp} mode=${mode}`);
+
+    // Dedup
+    const dedupKey = `minop|${txnId}|${punchId}|${timestamp}`;
+    if (!state.processedTransIDs.has(dedupKey)) {
+      state.processedTransIDs.add(dedupKey);
+
+      const status = mode === 'OUT' ? 1 : 0;
+      const record = {
+        transID: String(txnId),
+        serialNo: state.deviceSN || `DVC-${dvcId}`,
+        userID: punchId,
+        timestamp,
+        attendStat: mode === 'OUT' ? 'Duty Off' : 'Duty On',
+        verifMode: 'FP',
+        status,
+        verifyCode: 1,
+        receivedAt: new Date().toISOString(),
+        forwarded: false,
+      };
+      state.records.push(record);
+      newRecords.push(record);
+    }
+
+    // ACK this txnId — THIS is what clears the device queue
+    transStatus.push({ txnId, status: 1 });
+  }
+
+  // Forward new records to Aimify
+  if (newRecords.length > 0) {
+    try {
+      const sn = state.deviceSN || 'M2025011735';
+      const body = newRecords.map(r =>
+        `${r.userID}\t${r.timestamp}\t${r.status}\t${r.verifyCode}\t0\t0\t0`
+      ).join('\n');
+
+      await sendPunchLogs(sn, body);
+      newRecords.forEach(r => r.forwarded = true);
+      state.forwarded += newRecords.length;
+      state.lastForward = new Date().toISOString();
+      log(`✅ MINOP: Forwarded ${newRecords.length} record(s) to Aimify`);
+    } catch (e) {
+      state.forwardErrors++;
+      log(`❌ MINOP forward failed: ${e.message}`);
+    }
+  }
+
+  // CRITICAL: Return transStatus with status:1 for each txnId
+  // This tells the device "I got it, clear from your queue"
+  log(`📤 MINOP ACK: ${JSON.stringify({ transStatus })}`);
+  res.json({ transStatus });
+});
+
+// ── SSL Webhook Mode — simple attendance webhook ──
+app.post("/api/DeviceApi/saveEtimeAttendance", async (req, res) => {
+  const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+  log(`📥 SSL WEBHOOK: ${JSON.stringify(body).substring(0, 500)}`);
+
+  // Process whatever format arrives
+  if (body?.trans) {
+    // Same as saveAttendance
+    for (const t of body.trans) {
+      log(`📋 SSL: txnId=${t.txnId} punch=${t.punchId} time=${t.txnDateTime} mode=${t.mode}`);
+    }
+  }
+
+  // Response: plain text "success" — this is what the SSL mode expects
+  res.send("success");
 });
 
 app.get("/iclock/getrequest", (req, res) => {

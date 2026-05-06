@@ -957,8 +957,19 @@ const tcpServer = net.createServer((socket) => {
     // ══════════════════════════════════════════════════════
     try {
       // OK\r\n per firmware documentation — raw bytes, CRLF terminated
-      socket.write(Buffer.from('OK\r\n'));
-      log(`✅ ACK "OK\\r\\n" sent to ${remote}`);
+      // Extract TransID from XML for proper XML ACK
+    // Device only advances flash queue when it sees TransID echoed back in XML
+    const rawTextAck = buffer.toString('utf8');
+    const ackTIDMatch = rawTextAck.match(/<TransID>(.*?)<\/TransID>/);
+    const ackTransID = ackTIDMatch ? ackTIDMatch[1] : '0';
+    const ackUIDMatch = rawTextAck.match(/<DeviceUID>(.*?)<\/DeviceUID>/);
+    const ackDevUID = ackUIDMatch ? ackUIDMatch[1] : '';
+
+    // XML ACK: echo TransID + Result=1 + null terminator (\0)
+    // This is what working servers send — NOT plain OK\r\n
+    const xmlAck = `<?xml version="1.0"?><Message><DeviceUID>${ackDevUID}</DeviceUID><TransID>${ackTransID}</TransID><Result>1</Result></Message>\0`;
+    socket.write(Buffer.from(xmlAck));
+    log(`✅ XML ACK sent to ${remote} → TransID=${ackTransID} Result=1`);
     } catch (e) {
       log(`⚠️ Failed to send ACK: ${e.message}`);
     }

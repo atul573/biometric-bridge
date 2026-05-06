@@ -66,10 +66,10 @@ function parseMantraXML(xmlString) {
 }
 
 function buildAckXML(transID, serialNo) {
-  // Mantra BioFace TCP push expects plain-text ACK — NOT HTTP headers
-  // Research confirms: device needs "OK" or "Ret=0" as plain text
-  // Try: "OK\n" — the simplest format that clears the queue
-  return Buffer.concat([Buffer.from('OK\n', 'utf8'), Buffer.from([0x00])]);
+  // MORX biometric push protocol expects XML Response with Status=Success
+  // matching the TransID to advance the queue pointer
+  const xml = `<?xml version="1.0"?><Response><Status>Success</Status><TransID>${transID}</TransID></Response>`;
+  return Buffer.concat([Buffer.from(xml, 'utf8'), Buffer.from([0x00])]);
 }
 
 /**

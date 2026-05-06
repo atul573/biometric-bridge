@@ -63,16 +63,10 @@ function parseMantraXML(xmlString) {
 }
 
 function buildAckXML(transID, serialNo) {
-  // eBioServer protocol: Response with DeviceSerialNo + TransIDs + SUCCESS
-  // This tells the device firmware to CLEAR the acknowledged record from its queue
-  const xml = '<?xml version="1.0" encoding="UTF-8"?>'
-    + '<Response>'
-    + '<DeviceSerialNo>' + (serialNo || '') + '</DeviceSerialNo>'
-    + '<TransIDs>' + transID + '</TransIDs>'
-    + '<Status>SUCCESS</Status>'
-    + '</Response>';
-  // Null-terminate like the device does
-  return Buffer.concat([Buffer.from(xml, "utf8"), Buffer.from([0x00])]);
+  // Mantra BioFace devices expect JSON ACK over raw TCP to increment queue pointer
+  // Without JSON "success" key, device never moves to record #2
+  const jsonAck = JSON.stringify({ Return: "True", status: 1, TransID: transID });
+  return Buffer.concat([Buffer.from(jsonAck, 'utf8'), Buffer.from([0x00])]);
 }
 
 /**
@@ -172,27 +166,9 @@ async function processMantraMessage(data, socket, remoteAddr) {
   // PROTOCOL: Double null-byte terminator + CRLF line endings matching device format
   try {
     const ack = buildAckXML(transID, serialNo);
-    log(`📤 ACK sent: ${ack.length} bytes`);
+    log(`📤 JSON ACK sent: ${ack.length} bytes → ${ack.toString('utf8').replace(/\0/g, '')}`);
     socket.write(ack);
     log(`✅ ACK sent for TransID ${transID}`);
-
-    // After ACK, send ClearLog command through the same socket
-    // Try multiple command formats the device might understand
-    setTimeout(() => {
-      try {
-        // Format 1: XML ClearLog command matching device protocol
-        const clearCmd = '<?xml version="1.0"?><Message>'
-          + '<DeviceSerialNo>' + serialNo + '</DeviceSerialNo>'
-          + '<DeviceCommand>ClearLog</DeviceCommand>'
-          + '<TransID>' + transID + '</TransID>'
-          + '</Message>';
-        const clearBuf = Buffer.concat([Buffer.from(clearCmd, 'utf8'), Buffer.from([0x00])]);
-        socket.write(clearBuf);
-        log(`🗑️ ClearLog command sent (${clearBuf.length} bytes)`);
-      } catch (e) {
-        log(`⚠️ ClearLog send failed: ${e.message}`);
-      }
-    }, 500);
   } catch (e) {
     log(`⚠️ Failed to send ACK: ${e.message}`);
   }

@@ -172,9 +172,27 @@ async function processMantraMessage(data, socket, remoteAddr) {
   // PROTOCOL: Double null-byte terminator + CRLF line endings matching device format
   try {
     const ack = buildAckXML(transID, serialNo);
-    log(`📤 ACK sent: ${ack.length} bytes, hex: ${ack.toString('hex')}`);
+    log(`📤 ACK sent: ${ack.length} bytes`);
     socket.write(ack);
     log(`✅ ACK sent for TransID ${transID}`);
+
+    // After ACK, send ClearLog command through the same socket
+    // Try multiple command formats the device might understand
+    setTimeout(() => {
+      try {
+        // Format 1: XML ClearLog command matching device protocol
+        const clearCmd = '<?xml version="1.0"?><Message>'
+          + '<DeviceSerialNo>' + serialNo + '</DeviceSerialNo>'
+          + '<DeviceCommand>ClearLog</DeviceCommand>'
+          + '<TransID>' + transID + '</TransID>'
+          + '</Message>';
+        const clearBuf = Buffer.concat([Buffer.from(clearCmd, 'utf8'), Buffer.from([0x00])]);
+        socket.write(clearBuf);
+        log(`🗑️ ClearLog command sent (${clearBuf.length} bytes)`);
+      } catch (e) {
+        log(`⚠️ ClearLog send failed: ${e.message}`);
+      }
+    }, 500);
   } catch (e) {
     log(`⚠️ Failed to send ACK: ${e.message}`);
   }

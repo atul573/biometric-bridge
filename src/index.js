@@ -68,6 +68,11 @@ function buildAckXML(transID) {
   return `<?xml version="1.0"?><Message><TransID>${transID}</TransID><Result>1</Result><Status>OK</Status></Message>\x00`;
 }
 
+function buildClearLogCmd(transID) {
+  // Command to tell device to clear the acknowledged log entry
+  return `<?xml version="1.0"?><Message><TransID>${transID}</TransID><Command>ClearLog</Command><Result>1</Result></Message>\x00`;
+}
+
 /**
  * Map Mantra AttendStat → iClock status code
  *   "Duty On"  → 0 (Check-In)
@@ -155,6 +160,15 @@ async function processMantraMessage(data, socket, remoteAddr) {
     log(`📤 ACK hex (${ack.length} bytes): ${ackHex}`);
     socket.write(ack);
     log(`✅ ACK sent for TransID ${transID}`);
+
+    // After ACK, send ClearLog command to tell device to purge this record
+    setTimeout(() => {
+      try {
+        const clearCmd = buildClearLogCmd(transID);
+        socket.write(clearCmd);
+        log(`🗑️ ClearLog command sent for TransID ${transID}`);
+      } catch (_) {}
+    }, 500);
   } catch (e) {
     log(`⚠️ Failed to send ACK: ${e.message}`);
   }

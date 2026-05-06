@@ -155,6 +155,11 @@ async function processMantraMessage(data, socket, remoteAddr) {
     log(`⚠️ Failed to send ACK: ${e.message}`);
   }
 
+  // ── Always send heartbeat to Aimify (even on duplicates) ──
+  state.heartbeats++;
+  state.lastHeartbeat = new Date().toISOString();
+  sendHeartbeat(serialNo, remoteAddr.split(":")[0]).catch(() => {});
+
   // ── Check for duplicate (device may resend before ACK arrives) ──
   if (state.processedTransIDs.has(transID)) {
     log(`⏭️ Duplicate TransID ${transID} — skipping`);
@@ -220,19 +225,9 @@ async function processMantraMessage(data, socket, remoteAddr) {
       // TODO: Phase 4 — queue to SQLite for retry
     }
 
-    // Update heartbeat
-    state.heartbeats++;
-    state.lastHeartbeat = new Date().toISOString();
-
   } else {
     log(`ℹ️ Non-attendance event: ${event} (TransID: ${transID})`);
-    // Still count as heartbeat
-    state.heartbeats++;
-    state.lastHeartbeat = new Date().toISOString();
   }
-
-  // Always send heartbeat to Aimify backend (updates lastHeartbeat in MongoDB)
-  sendHeartbeat(serialNo, remoteAddr).catch(() => {});
 
   // Save to file log
   try {

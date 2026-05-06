@@ -695,12 +695,9 @@ const tcpServer = net.createServer((socket) => {
     // This is the critical fix: device expects raw 0x06
     // ══════════════════════════════════════════════════════
     try {
-      // Build XML ACK mirroring device fields
-      const deviceUID = text.match(/<DeviceUID>(.*?)<\/DeviceUID>/)?.[1] || '';
-      const transID = text.match(/<TransID>(.*?)<\/TransID>/)?.[1] || '0';
-      const xmlAck = `<?xml version="1.0"?><Message><DeviceUID>${deviceUID}</DeviceUID><TransID>${transID}</TransID><Status>Success</Status></Message>`;
-      socket.write(Buffer.from(xmlAck + '\0\0'));
-      log(`✅ XML ACK sent (DevUID=${deviceUID} TxnID=${transID}) to ${remote}`);
+      // Try bare 0x06 ACK — standard ASCII ACK byte used by many Mantra/biometric protocols
+      socket.write(Buffer.from([0x06]));
+      log(`✅ ACK 0x06 sent to ${remote}`);
     } catch (e) {
       log(`⚠️ Failed to send ACK: ${e.message}`);
     }

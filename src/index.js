@@ -695,8 +695,10 @@ const tcpServer = net.createServer((socket) => {
     // This is the critical fix: device expects raw 0x06
     // ══════════════════════════════════════════════════════
     try {
-      socket.write(Buffer.from('{"Message":"Success"}'));
-      log(`✅ ACK {"Message":"Success"} sent to ${remote}`);
+      // Device sends XML <Message> — respond with XML ACK
+      const xmlAck = '<?xml version="1.0"?><Message><Status>Success</Status></Message>';
+      socket.write(Buffer.from(xmlAck));
+      log(`✅ XML ACK sent to ${remote}`);
     } catch (e) {
       log(`⚠️ Failed to send ACK: ${e.message}`);
     }

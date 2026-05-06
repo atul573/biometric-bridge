@@ -671,7 +671,9 @@ async function handleFkwebRequest(req, res) {
                : typeof req.body === 'string' ? Buffer.from(req.body)
                : Buffer.alloc(0);
 
-  log(`📡 FKWEB ${method} ${url} | request_code=${requestCode} | dev_id=${devId} | ${rawBuf.length} bytes`);
+  // Log ALL headers for diagnosis
+  log(`📡 FKWEB ${method} ${url} | request_code=${requestCode} | dev_id=${devId} | trans_id=${transId} | ${rawBuf.length} bytes`);
+  log(`📡 FKWEB ALL HEADERS: ${JSON.stringify(req.headers)}`);
   log(`📡 FKWEB Raw HEX: ${rawBuf.toString('hex').substring(0, 120)}`);
   log(`📡 FKWEB Raw UTF8: ${rawBuf.toString('utf8', 0, Math.min(rawBuf.length, 200))}`);
 
@@ -721,8 +723,20 @@ async function handleFkwebRequest(req, res) {
       log(`❌ FKWEB raw hex: ${rawBuf.toString('hex')}`);
     }
 
-    // Send proper JSON ACK — tells device this glog record is received and queue can advance
-    res.json({ result: 0, res_code: 'realtime_glog', trans_id: transId || '0' });
+    // Try multiple ACK formats — device needs to know the record is received to delete from queue
+    // The ACK must echo back the record identifiers so device can match & clear it
+    const ackPayload = {
+      result: 0,
+      res_code: 'realtime_glog',
+      dev_id: devId,
+      trans_id: transId || '0',
+    };
+    log(`📤 FKWEB glog ACK → ${JSON.stringify(ackPayload)}`);
+    res
+      .set('Content-Type', 'application/json')
+      .set('Connection', 'keep-alive')
+      .status(200)
+      .json(ackPayload);
     return;
   }
 

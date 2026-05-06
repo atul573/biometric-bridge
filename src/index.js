@@ -63,8 +63,8 @@ function parseMantraXML(xmlString) {
 }
 
 function buildAckXML(transID) {
-  // Try matching eBioServer exact format: \r\n with null terminator
-  return `<?xml version="1.0"?>\r\n<Message>\r\n<TransID>${transID}</TransID>\r\n<Status>OK</Status>\r\n</Message>\r\n\0`;
+  // Match device format: single continuous XML line, null-terminated
+  return `<?xml version="1.0"?><Message><TransID>${transID}</TransID><Status>OK</Status></Message>\0`;
 }
 
 /**

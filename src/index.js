@@ -399,24 +399,114 @@ app.get("/api/records", (_req, res) => {
   });
 });
 
-// ── iClock fallback (if device switches to HTTP mode) ──
+// ── iClock / ADMS HTTP Protocol (Production) ──
+// This is the PROPER protocol for Mantra devices.
+// Device must be configured: Menu → Communication → Server → HTTP mode
+// Server URL: http://168.144.119.199:80/iclock/cdata
+//
+// Flow: 1) Device GETs /iclock/cdata → server sends config
+//       2) Device POSTs /iclock/cdata?table=ATTLOG → server receives data, responds OK
+//       3) Device GETs /iclock/getrequest → server can send CLEAR LOG command
+//       4) Device processes OK → clears its internal queue ✅
+
+// Command queue for device (CLEAR LOG, etc.)
+const deviceCommandQueue = [];
+
 app.get("/iclock/cdata", (req, res) => {
   const sn = req.query.SN || req.query.sn || "unknown";
   log(`💓 iClock Handshake from SN=${sn}`);
   state.heartbeats++;
   state.lastHeartbeat = new Date().toISOString();
   state.deviceSN = sn;
+  state.devices[sn] = {
+    ...(state.devices[sn] || {}),
+    lastSeen: new Date().toISOString(),
+    ip: req.ip,
+    mode: "HTTP/ADMS",
+  };
+  // Tell device to push AttLog in realtime
   res.send(`GET OPTION FROM: ${sn}\r\nATTLOGStamp=0\r\nOPERLOGStamp=0\r\nATTPHOTOStamp=0\r\nErrorDelay=30\r\nDelay=10\r\nTransTimes=00:00;14:05\r\nTransInterval=1\r\nTransFlag=TransData AttLog\r\nTimeZone=5.5\r\nRealtime=1\r\nEncrypt=0\r\n`);
 });
 
-app.post("/iclock/cdata", (req, res) => {
+app.post("/iclock/cdata", async (req, res) => {
   const sn = req.query.SN || req.query.sn || "unknown";
-  log(`📥 iClock PUSH from SN=${sn}, table=${req.query.table}`);
+  const table = req.query.table || "unknown";
+  log(`📥 iClock POST from SN=${sn}, table=${table}`);
+
+  if (table === "ATTLOG") {
+    // Parse tab-separated attendance lines
+    // Format: UserID\tTimestamp\tStatus\tVerify\t...
+    const body = typeof req.body === "string" ? req.body : req.body?.toString() || "";
+    const lines = body.split("\n").filter(l => l.trim());
+    const records = [];
+
+    for (const line of lines) {
+      const parts = line.split("\t");
+      if (parts.length >= 2) {
+        const userID = parts[0].trim();
+        const timestamp = parts[1].trim();
+        const status = parts[2]?.trim() || "0";
+        const verify = parts[3]?.trim() || "0";
+
+        // Dedup
+        const dedupKey = `http|${userID}|${timestamp}`;
+        if (state.processedTransIDs.has(dedupKey)) {
+          log(`⏭️ HTTP duplicate ${dedupKey} — skipping`);
+          continue;
+        }
+        state.processedTransIDs.add(dedupKey);
+
+        log(`📋 HTTP ATTENDANCE: User ${userID} | ${timestamp} | status=${status}`);
+        records.push({ userID, timestamp, status, verify });
+
+        state.records.push({
+          source: "HTTP/ADMS",
+          userID,
+          timestamp,
+          status,
+          receivedAt: new Date().toISOString(),
+        });
+      }
+    }
+
+    // Forward to Aimify
+    if (records.length > 0) {
+      try {
+        const attlogBody = records
+          .map(r => `${r.userID}\t${r.timestamp}\t${r.status}\t${r.verify}\t0\t0\t0`)
+          .join("\n");
+        await sendPunchLogs(sn, attlogBody);
+        state.forwarded += records.length;
+        state.lastForward = new Date().toISOString();
+        log(`✅ HTTP: Forwarded ${records.length} record(s) to Aimify`);
+      } catch (e) {
+        state.forwardErrors++;
+        log(`❌ HTTP forward failed: ${e.message}`);
+      }
+    }
+  }
+
+  // CRITICAL: Responding with "OK" tells the device to CLEAR this record from its queue
   res.send("OK");
 });
 
 app.get("/iclock/getrequest", (req, res) => {
-  res.send("OK");
+  const sn = req.query.SN || req.query.sn || "unknown";
+  // If there are pending commands, send one
+  if (deviceCommandQueue.length > 0) {
+    const cmd = deviceCommandQueue.shift();
+    log(`📤 Sending command to device ${sn}: ${cmd}`);
+    res.send(cmd);
+  } else {
+    res.send("OK");
+  }
+});
+
+// ── Admin endpoint to queue CLEAR LOG command ──
+app.post("/admin/clear-device-log", (req, res) => {
+  deviceCommandQueue.push("C:1:CLEAR LOG");
+  log(`🗑️ CLEAR LOG command queued for next device heartbeat`);
+  res.json({ success: true, message: "CLEAR LOG command queued" });
 });
 
 // ── Catch-all ──

@@ -231,6 +231,9 @@ async function processMantraMessage(data, socket, remoteAddr) {
     state.lastHeartbeat = new Date().toISOString();
   }
 
+  // Always send heartbeat to Aimify backend (updates lastHeartbeat in MongoDB)
+  sendHeartbeat(serialNo, remoteAddr).catch(() => {});
+
   // Save to file log
   try {
     const logDir = process.env.LOG_DIR || "/root";

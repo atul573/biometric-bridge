@@ -42,10 +42,17 @@ function log(msg) {
 // ═══════════════════════════════════════════════════════════════════
 
 function parseMantraXML(xmlString) {
+  // Normalize: strip \0, collapse \r\r\n → \n, remove stray \r
+  const clean = xmlString
+    .replace(/\0/g, "")
+    .replace(/\r\r\n/g, "\n")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "");
+
   const result = {};
   const tagPattern = /<(\w+)>(.*?)<\/\1>/gs;
   let match;
-  while ((match = tagPattern.exec(xmlString)) !== null) {
+  while ((match = tagPattern.exec(clean)) !== null) {
     result[match[1]] = match[2].trim();
   }
   return result;

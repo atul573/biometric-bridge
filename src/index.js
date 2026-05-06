@@ -49,10 +49,14 @@ function parseMantraXML(xmlString) {
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "");
 
+  // First extract inner content of <Message>...</Message> wrapper
+  const msgMatch = clean.match(/<Message>([\s\S]*?)<\/Message>/);
+  const inner = msgMatch ? msgMatch[1] : clean;
+
   const result = {};
-  const tagPattern = /<(\w+)>(.*?)<\/\1>/gs;
+  const tagPattern = /<(\w+)>(.*?)<\/\1>/g;
   let match;
-  while ((match = tagPattern.exec(clean)) !== null) {
+  while ((match = tagPattern.exec(inner)) !== null) {
     result[match[1]] = match[2].trim();
   }
   return result;

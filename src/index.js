@@ -69,12 +69,9 @@ function parseMantraXML(xmlString) {
   return result;
 }
 
-function buildAckXML(transID, serialNo) {
-  // MORX biometric push protocol expects XML Response with Status=Success
-  // matching the TransID to advance the queue pointer
-  const xml = `<?xml version="1.0"?><Response><Status>Success</Status><TransID>${transID}</TransID></Response>`;
-  return Buffer.concat([Buffer.from(xml, 'utf8'), Buffer.from([0x00])]);
-}
+// ACK byte constants for TCP push protocol
+const ACK_BYTE = Buffer.from([0x06]);        // Primary: ASCII ACK
+const ACK_OK   = Buffer.from('OK');           // Fallback: plain "OK"
 
 // ═══════════════════════════════════════════════════════════════════
 // ZKTeco SDK — Remote device management via UDP port 4370
@@ -151,39 +148,23 @@ function buildTimestamp(parsed) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// PROCESS ATTENDANCE — Parse XML, ACK device, forward to Aimify
+// PROCESS ATTENDANCE — Parse XML, forward to Aimify
+// NOTE: ACK is sent BEFORE this function is called (in TCP handler)
 // ═══════════════════════════════════════════════════════════════════
 
-async function processMantraMessage(data, socket, remoteAddr) {
+async function processMantraMessage(data, remoteAddr) {
   const raw = data.toString("utf8");
 
-  // DEEP PROTOCOL ANALYSIS: Full hex dump
-  log(`🔬 FULL MESSAGE: ${data.length} bytes total`);
-  log(`🔬 FULL HEX: ${data.toString("hex")}`);
-  // Check what comes AFTER </Message> — checksum? length? null bytes?
-  const msgEndIdx = raw.indexOf('</Message>');
-  if (msgEndIdx >= 0) {
-    const afterMsg = data.slice(msgEndIdx + 10); // bytes after </Message>
-    log(`🔬 AFTER </Message>: ${afterMsg.length} bytes → hex: ${afterMsg.toString("hex")} → text: "${afterMsg.toString("utf8")}"`);
-    // Check bytes BEFORE <?xml — any length prefix?
-    const xmlStartIdx = raw.indexOf('<?xml');
-    if (xmlStartIdx > 0) {
-      const beforeXml = data.slice(0, xmlStartIdx);
-      log(`🔬 BEFORE <?xml>: ${beforeXml.length} bytes → hex: ${beforeXml.toString("hex")}`);
-    }
-  }
+  log(`📦 Processing ${data.length} bytes from ${remoteAddr}`);
 
   const parsed = parseMantraXML(raw);
 
   // Debug: log what we parsed
-  log(`🔍 DEBUG parsed keys: ${JSON.stringify(Object.keys(parsed))}`);
-  log(`🔍 DEBUG parsed: ${JSON.stringify(parsed).substring(0, 500)}`);
+  log(`🔍 Parsed: TransID=${parsed.TransID} User=${parsed.UserID} Event=${parsed.Event}`);
 
   // Validate required fields
   if (!parsed.TransID || !parsed.DeviceSerialNo) {
-    log(`⚠️ Invalid XML message — missing TransID (${parsed.TransID}) or SerialNo (${parsed.DeviceSerialNo})`);
-    // Try alternate key names
-    log(`⚠️ All keys: ${Object.keys(parsed).join(", ")}`);
+    log(`⚠️ Invalid XML — missing TransID or SerialNo. Keys: ${Object.keys(parsed).join(", ")}`);
     return;
   }
 
@@ -200,17 +181,6 @@ async function processMantraMessage(data, socket, remoteAddr) {
     ip: remoteAddr.split(":")[0],
   };
   state.deviceSN = serialNo;
-
-  // ── Send ACK with correct protocol format ──
-  // PROTOCOL: Double null-byte terminator + CRLF line endings matching device format
-  try {
-    const ack = buildAckXML(transID, serialNo);
-    log(`📤 JSON ACK sent: ${ack.length} bytes → ${ack.toString('utf8').replace(/\0/g, '')}`);
-    socket.write(ack);
-    log(`✅ ACK sent for TransID ${transID}`);
-  } catch (e) {
-    log(`⚠️ Failed to send ACK: ${e.message}`);
-  }
 
   // ── Always send heartbeat to Aimify (even on duplicates) ──
   state.heartbeats++;
@@ -570,6 +540,8 @@ app.all("*", (req, res) => {
 
 // ═══════════════════════════════════════════════════════════════════
 // RAW TCP SERVER (Mantra eBioServer XML protocol on port 1018)
+// CRITICAL: Send 0x06 ACK IMMEDIATELY on complete message
+//           BEFORE any parsing, DB, or API work
 // ═══════════════════════════════════════════════════════════════════
 
 const tcpServer = net.createServer((socket) => {
@@ -579,11 +551,11 @@ const tcpServer = net.createServer((socket) => {
 
   let buffer = Buffer.alloc(0);
 
-  socket.on("data", async (data) => {
+  socket.on("data", (data) => {
     // Accumulate data in buffer (message may arrive in chunks)
     buffer = Buffer.concat([buffer, data]);
 
-    // Check if we have a complete message (ends with null byte \0 or </Message>)
+    // Check if we have a complete message (ends with </Message>)
     const text = buffer.toString("utf8");
     if (!text.includes("</Message>")) {
       log(`📦 Buffering ${data.length} bytes from ${remote} (waiting for complete message)`);
@@ -592,11 +564,27 @@ const tcpServer = net.createServer((socket) => {
 
     log(`📦 TCP DATA from ${remote} (${buffer.length} bytes)`);
 
-    // Process the complete message
-    await processMantraMessage(buffer, socket, remote);
+    // ══════════════════════════════════════════════════════
+    // STEP 1: Send ACK IMMEDIATELY — before ANY processing
+    // This is the critical fix: device expects raw 0x06
+    // ══════════════════════════════════════════════════════
+    try {
+      socket.write(ACK_BYTE);
+      log(`✅ ACK 0x06 sent IMMEDIATELY to ${remote}`);
+    } catch (e) {
+      log(`⚠️ Failed to send ACK: ${e.message}`);
+    }
 
-    // Clear buffer
+    // Capture buffer before clearing
+    const completeMessage = buffer;
     buffer = Buffer.alloc(0);
+
+    // ══════════════════════════════════════════════════════
+    // STEP 2: Process data AFTER ACK (async, non-blocking)
+    // ══════════════════════════════════════════════════════
+    processMantraMessage(completeMessage, remote).catch((err) => {
+      log(`❌ Process error: ${err.message}`);
+    });
   });
 
   socket.on("close", () => {
@@ -637,31 +625,27 @@ function handleWebSocket(ws, req, label) {
     const raw = isBinary ? data : data.toString('utf8');
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
     log(`🌐 WS MESSAGE from ${remote}: ${buf.length} bytes`);
-    log(`🌐 WS RAW: ${typeof raw === 'string' ? raw.substring(0, 500) : buf.toString('hex').substring(0, 500)}`);
 
     // Check if it's the familiar XML format
     const text = buf.toString('utf8');
     if (text.includes('<Message>') || text.includes('</Message>')) {
-      // Process same as TCP XML
-      await processMantraMessage(buf, {
-        write: (ackData) => {
-          try {
-            // Send ACK back via WebSocket
-            const ackStr = Buffer.isBuffer(ackData) ? ackData.toString('utf8').replace(/\0/g, '') : ackData;
-            ws.send(ackStr);
-            log(`🌐 WS ACK sent: ${ackStr}`);
-          } catch (e) {
-            log(`⚠️ WS ACK send failed: ${e.message}`);
-          }
-        }
-      }, remote);
+      // Send ACK immediately via WebSocket
+      try {
+        ws.send(Buffer.from([0x06]));
+        log(`✅ WS ACK 0x06 sent to ${remote}`);
+      } catch (e) {
+        log(`⚠️ WS ACK send failed: ${e.message}`);
+      }
+
+      // Process after ACK
+      processMantraMessage(buf, remote).catch((err) => {
+        log(`❌ WS process error: ${err.message}`);
+      });
     } else {
-      // Unknown format — log it and try JSON ACK
+      // Unknown format — log and ACK
       log(`🌐 WS UNKNOWN format: ${text.substring(0, 200)}`);
       try {
-        const ack = JSON.stringify({ Return: "True", status: 1 });
-        ws.send(ack);
-        log(`🌐 WS generic ACK sent: ${ack}`);
+        ws.send(Buffer.from([0x06]));
       } catch (e) {
         log(`⚠️ WS generic ACK failed: ${e.message}`);
       }

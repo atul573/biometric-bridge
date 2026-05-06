@@ -860,14 +860,7 @@ wss7788.on('connection', (ws, req) => {
   const remote = req.socket.remoteAddress + ':' + req.socket.remotePort;
   log(`🌐 WS7788 CONNECTION from ${remote}`);
   log(`🌐 WS7788 URL: ${req.url} | Headers: ${JSON.stringify(req.headers)}`);
-
-  // Send initial handshake expected by Mantra WebSocket firmware
-  try {
-    ws.send(JSON.stringify({ Return: "True", status: 1 }));
-    log(`🌐 WS7788 initial handshake sent`);
-  } catch (e) {
-    log(`⚠️ WS7788 handshake failed: ${e.message}`);
-  }
+  // Do NOT send anything first — wait for device to initiate the conversation
 
   ws.on('message', async (data, isBinary) => {
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
@@ -919,9 +912,14 @@ wss7788.on('connection', (ws, req) => {
         ws.send(JSON.stringify({ Return: "True", status: 1, cmd: 'heartbeat' }));
 
       } else {
-        // Unknown command — ACK it anyway
-        log(`🌐 WS7788 UNKNOWN cmd: ${JSON.stringify(json)}`);
-        ws.send(JSON.stringify({ Return: "True", status: 1 }));
+        // Ignore if this is an echo of our own ACK (ping-pong prevention)
+        if (json.Return === 'True' || json.Return === true) {
+          log(`🌐 WS7788 ignoring echo of our own ACK`);
+        } else {
+          // Unknown device command — log everything and ACK
+          log(`🌐 WS7788 UNKNOWN cmd: ${JSON.stringify(json)} — sending ACK`);
+          ws.send(JSON.stringify({ Return: "True", status: 1 }));
+        }
       }
 
     } catch (e) {

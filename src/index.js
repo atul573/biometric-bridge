@@ -695,9 +695,9 @@ const tcpServer = net.createServer((socket) => {
     // This is the critical fix: device expects raw 0x06
     // ══════════════════════════════════════════════════════
     try {
-      // Send 0x06 ACK on incoming socket
-      socket.write(Buffer.from([0x06]));
-      log(`✅ ACK 0x06 sent to ${remote}`);
+      // OK\r\n per firmware documentation — raw bytes, CRLF terminated
+      socket.write(Buffer.from('OK\r\n'));
+      log(`✅ ACK "OK\\r\\n" sent to ${remote}`);
     } catch (e) {
       log(`⚠️ Failed to send ACK: ${e.message}`);
     }

@@ -952,71 +952,55 @@ const tcpServer = net.createServer((socket) => {
     }
 
     // ══════════════════════════════════════════════════════
-    // STEP 1: Extract TransID + DeviceUID from the message
+    // Extract TransID + DeviceUID + Event from the message
     // ══════════════════════════════════════════════════════
     const rawTextAck = buffer.toString('utf8');
     const ackTIDMatch = rawTextAck.match(/<TransID>(.*?)<\/TransID>/);
     const ackTransID = ackTIDMatch ? ackTIDMatch[1] : '0';
     const ackUIDMatch = rawTextAck.match(/<DeviceUID>(.*?)<\/DeviceUID>/);
     const ackDevUID = ackUIDMatch ? ackUIDMatch[1] : '';
+    const ackSNMatch = rawTextAck.match(/<DeviceSerialNo>(.*?)<\/DeviceSerialNo>/);
+    const ackSN = ackSNMatch ? ackSNMatch[1] : '';
 
     // Capture buffer before clearing
     const completeMessage = buffer;
     buffer = Buffer.alloc(0);
 
     // ══════════════════════════════════════════════════════
-    // STEP 2: Send ACK immediately on the SAME socket
-    // Device stays connected ~60s, use that window!
+    // STEP 1: XML ACK with Result=0 (0=success in embedded protocols)
+    // CRITICAL: We were sending Result=1 which means ERROR → device retries forever!
+    // Result=0 = "record received and accepted, safe to delete from flash"
     // ══════════════════════════════════════════════════════
     try {
-      socket.write(Buffer.from('OK\r\n'));
-      log(`✅ ACK OK sent to ${remote} — TransID=${ackTransID}`);
+      // Primary: XML ACK with Result=0 (SUCCESS) + null terminator
+      const xmlAckSuccess = `<?xml version="1.0"?><Message><DeviceUID>${ackDevUID}</DeviceUID><TransID>${ackTransID}</TransID><Result>0</Result></Message>\0`;
+      socket.write(Buffer.from(xmlAckSuccess));
+      log(`✅ XML ACK Result=0 (SUCCESS) sent → TransID=${ackTransID} DeviceUID=${ackDevUID}`);
     } catch (e) {
       log(`⚠️ ACK failed: ${e.message}`);
     }
 
     // ══════════════════════════════════════════════════════
-    // STEP 3: Process the attendance data
+    // STEP 2: Process the attendance data
     // ══════════════════════════════════════════════════════
     processMantraMessage(completeMessage, remote).catch((err) => {
       log(`❌ Process error: ${err.message}`);
     });
 
     // ══════════════════════════════════════════════════════
-    // STEP 4: Send DeleteLog ON THE SAME SOCKET (300ms later)
-    // Device is still connected — send command while socket is open
-    // This is the KEY FIX: outbound port 5005 fails (device behind NAT)
-    // but we CAN write to the INBOUND socket the device opened to us!
+    // STEP 3: Close socket 800ms after ACK
+    // Server-initiated close signals "delivery confirmed, done"
+    // Device will then advance its queue to the next record
+    // (This is how working servers trigger queue advancement)
     // ══════════════════════════════════════════════════════
     setTimeout(() => {
       try {
-        if (socket.destroyed || !socket.writable) {
-          log(`⚠️ Socket closed before DeleteLog could be sent for TransID=${ackTransID}`);
-          return;
+        if (!socket.destroyed) {
+          log(`🔒 Server closing socket after ACK → TransID=${ackTransID} — device should advance queue`);
+          socket.end(); // graceful FIN — device knows server is done with this record
         }
-
-        // Try multiple delete command formats — one should work
-        // Format 1: XML DeleteLog (Mantra eBioServer style)
-        const delCmd1 = `<?xml version="1.0"?><Message><DeviceUID>${ackDevUID}</DeviceUID><TransID>${ackTransID}</TransID><Command>DeleteLog</Command></Message>\0`;
-        // Format 2: XML ClearLog (ZKTeco style)  
-        const delCmd2 = `<?xml version="1.0"?><Message><DeviceUID>${ackDevUID}</DeviceUID><TransID>${ackTransID}</TransID><Command>ClearLog</Command></Message>\0`;
-
-        socket.write(Buffer.from(delCmd1));
-        log(`🗑️ DeleteLog sent on inbound socket → TransID=${ackTransID} DeviceUID=${ackDevUID}`);
-
-        setTimeout(() => {
-          try {
-            if (!socket.destroyed && socket.writable) {
-              socket.write(Buffer.from(delCmd2));
-              log(`🗑️ ClearLog sent on inbound socket → TransID=${ackTransID}`);
-            }
-          } catch(e2) { log(`⚠️ ClearLog failed: ${e2.message}`); }
-        }, 200);
-
-      } catch (e) {
-        log(`⚠️ DeleteLog send failed: ${e.message}`);
-      }
-    }, 300);
+      } catch(e) { log(`⚠️ Socket close failed: ${e.message}`); }
+    }, 800);
   });
 
   socket.on("close", () => {

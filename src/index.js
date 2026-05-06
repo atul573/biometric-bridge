@@ -116,8 +116,21 @@ function buildTimestamp(parsed) {
 async function processMantraMessage(data, socket, remoteAddr) {
   const raw = data.toString("utf8");
 
-  // Debug: log first 100 chars hex to see exact bytes
-  log(`🔍 DEBUG raw bytes (first 50): ${data.slice(0, 50).toString("hex")}`);
+  // DEEP PROTOCOL ANALYSIS: Full hex dump
+  log(`🔬 FULL MESSAGE: ${data.length} bytes total`);
+  log(`🔬 FULL HEX: ${data.toString("hex")}`);
+  // Check what comes AFTER </Message> — checksum? length? null bytes?
+  const msgEndIdx = raw.indexOf('</Message>');
+  if (msgEndIdx >= 0) {
+    const afterMsg = data.slice(msgEndIdx + 10); // bytes after </Message>
+    log(`🔬 AFTER </Message>: ${afterMsg.length} bytes → hex: ${afterMsg.toString("hex")} → text: "${afterMsg.toString("utf8")}"`);
+    // Check bytes BEFORE <?xml — any length prefix?
+    const xmlStartIdx = raw.indexOf('<?xml');
+    if (xmlStartIdx > 0) {
+      const beforeXml = data.slice(0, xmlStartIdx);
+      log(`🔬 BEFORE <?xml>: ${beforeXml.length} bytes → hex: ${beforeXml.toString("hex")}`);
+    }
+  }
 
   const parsed = parseMantraXML(raw);
 
@@ -147,19 +160,11 @@ async function processMantraMessage(data, socket, remoteAddr) {
   };
   state.deviceSN = serialNo;
 
-  // ── Send ACK immediately ──
-  // NOTE: Mantra M50 firmware does NOT process ACKs to clear its queue.
-  // The device will keep resending the same records until manually cleared.
-  // Our composite dedup key handles this gracefully.
-  try {
-    const ack = buildAckXML(transID);
-    const ackHex = Buffer.from(ack).toString('hex');
-    log(`📤 ACK hex (${ack.length} bytes): ${ackHex}`);
-    socket.write(ack);
-    log(`✅ ACK sent for TransID ${transID}`);
-  } catch (e) {
-    log(`⚠️ Failed to send ACK: ${e.message}`);
-  }
+  // ── EXPERIMENT: Try NO response at all ──
+  // Some Mantra devices interpret ANY response as an error
+  // and only move to next record when NO response is sent.
+  // If this works, we'll see different TransIDs on the same connection.
+  log(`🧪 EXPERIMENT: NOT sending ACK for TransID ${transID} — watching device behavior`);
 
   // ── Always send heartbeat to Aimify (even on duplicates) ──
   state.heartbeats++;

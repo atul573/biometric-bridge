@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Biometric Bridge Dashboard</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: #0a0a12;
+      color: #e0e0e8;
+      min-height: 100vh;
+      padding: 1.5rem;
+    }
+
+    .dashboard {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    /* ── Header ── */
+    .header {
+      background: linear-gradient(135deg, rgba(56,189,248,0.08), rgba(168,85,247,0.08));
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 16px;
+      padding: 1.5rem 2rem;
+      margin-bottom: 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+    .header h1 { font-size: 1.6rem; font-weight: 700; }
+    .header h1 span { color: #38bdf8; }
+    .conn-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: .5rem;
+      padding: .4rem 1rem;
+      border-radius: 999px;
+      font-size: .85rem;
+      font-weight: 600;
+    }
+    .conn-badge.waiting { background: rgba(251,191,36,.15); color: #fbbf24; }
+    .conn-badge.connected { background: rgba(52,211,153,.15); color: #34d399; }
+    .conn-badge .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+    .conn-badge.waiting .dot { background: #fbbf24; }
+    .conn-badge.connected .dot { background: #34d399; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+
+    /* ── Stats Row ── */
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .stat-card {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 12px;
+      padding: 1.2rem 1.5rem;
+    }
+    .stat-card .label { font-size: .78rem; color: #888; text-transform: uppercase; letter-spacing: .05em; }
+    .stat-card .value { font-size: 1.8rem; font-weight: 700; margin-top: .3rem; }
+    .stat-card .sub { font-size: .8rem; color: #666; margin-top: .2rem; }
+
+    /* ── Sections ── */
+    .section {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 12px;
+      margin-bottom: 1.5rem;
+      overflow: hidden;
+    }
+    .section-header {
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      font-weight: 600;
+      font-size: 1rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .section-header .count {
+      font-size: .8rem;
+      background: rgba(56,189,248,.15);
+      color: #38bdf8;
+      padding: .2rem .6rem;
+      border-radius: 999px;
+    }
+
+    /* ── Table ── */
+    .table-wrap { overflow-x: auto; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    th {
+      text-align: left;
+      padding: .7rem 1rem;
+      font-size: .75rem;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+    td {
+      padding: .65rem 1rem;
+      font-size: .88rem;
+      border-bottom: 1px solid rgba(255,255,255,0.03);
+    }
+    tr:hover td { background: rgba(255,255,255,0.03); }
+    .mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: .82rem; }
+    .empty-msg {
+      text-align: center;
+      padding: 2rem;
+      color: #555;
+      font-size: .9rem;
+    }
+
+    /* ── Raw hits ── */
+    .raw-entry {
+      padding: .6rem 1rem;
+      border-bottom: 1px solid rgba(255,255,255,0.03);
+      font-size: .82rem;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      word-break: break-all;
+    }
+    .raw-entry:hover { background: rgba(255,255,255,0.03); }
+    .raw-entry .method {
+      display: inline-block;
+      min-width: 50px;
+      font-weight: 600;
+      margin-right: .5rem;
+    }
+    .raw-entry .method.GET { color: #34d399; }
+    .raw-entry .method.POST { color: #38bdf8; }
+    .raw-entry .method.TCP { color: #f472b6; }
+    .raw-entry .method.PROBE { color: #fbbf24; }
+    .raw-entry .ts { color: #555; margin-right: .5rem; }
+
+    /* ── Instructions ── */
+    .instructions {
+      background: rgba(251,191,36,0.06);
+      border: 1px solid rgba(251,191,36,0.15);
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+    .instructions h3 { color: #fbbf24; margin-bottom: .8rem; font-size: 1rem; }
+    .instructions ol { padding-left: 1.2rem; }
+    .instructions li { margin-bottom: .5rem; font-size: .88rem; line-height: 1.5; color: #bbb; }
+    .instructions code {
+      background: rgba(255,255,255,0.08);
+      padding: .15rem .4rem;
+      border-radius: 4px;
+      font-family: 'SF Mono', monospace;
+      font-size: .82rem;
+      color: #e0e0e8;
+    }
+  </style>
+</head>
+<body>
+  <div class="dashboard">
+    <!-- Header -->
+    <div class="header">
+      <h1>📡 <span>Biometric Bridge</span> Dashboard</h1>
+      <div class="conn-badge waiting" id="conn-badge">
+        <div class="dot"></div>
+        <span id="conn-text">Waiting for device…</span>
+      </div>
+    </div>
+
+    <!-- Instructions -->
+    <div class="instructions" id="instructions">
+      <h3>⚠️ Device Setup Checklist</h3>
+      <ol>
+        <li>On the device: <b>Communication → Server-Client Mode</b> = <code>LogClient</code></li>
+        <li><b>Host PC Addr</b> = <code id="my-ip">192.168.1.74</code></li>
+        <li><b>Host PC Port</b> = <code>3001</code></li>
+        <li><b>Enable Domain Name</b> = <code>OFF</code></li>
+        <li><b>Power-cycle the device</b> (unplug power → wait 5s → replug)</li>
+        <li>Wait 30–60 seconds — heartbeat should appear below ↓</li>
+      </ol>
+    </div>
+
+    <!-- Stats -->
+    <div class="stats">
+      <div class="stat-card">
+        <div class="label">Heartbeats</div>
+        <div class="value" id="s-heartbeats">0</div>
+        <div class="sub" id="s-last-hb">No heartbeat yet</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Attendance Records</div>
+        <div class="value" id="s-records">0</div>
+        <div class="sub">Stored in attendance_logs.json</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Device Serial</div>
+        <div class="value" id="s-sn" style="font-size:1.2rem">—</div>
+        <div class="sub" id="s-uptime">Bridge uptime: —</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Raw HTTP Hits</div>
+        <div class="value" id="s-hits">0</div>
+        <div class="sub">Any request to this server</div>
+      </div>
+    </div>
+
+    <!-- Attendance Logs -->
+    <div class="section">
+      <div class="section-header">
+        📋 Attendance Logs
+        <span class="count" id="att-count">0</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>PIN</th>
+              <th>Timestamp</th>
+              <th>Status</th>
+              <th>Verify</th>
+              <th>Device SN</th>
+              <th>Received</th>
+            </tr>
+          </thead>
+          <tbody id="att-body"></tbody>
+        </table>
+        <div class="empty-msg" id="att-empty">No attendance records yet. Mark attendance on the device to see data here.</div>
+      </div>
+    </div>
+
+    <!-- Raw Hits -->
+    <div class="section">
+      <div class="section-header">
+        🔍 Raw Request Log <small style="color:#666; font-weight:400; margin-left:.5rem">(all HTTP/TCP hits)</small>
+        <span class="count" id="raw-count">0</span>
+      </div>
+      <div id="raw-body" style="max-height:400px; overflow-y:auto;">
+        <div class="empty-msg" id="raw-empty">No requests received yet.</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const POLL_MS = 3000;
+
+    const $ = (id) => document.getElementById(id);
+
+    function timeAgo(iso) {
+      if (!iso) return "—";
+      const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+      if (diff < 60) return `${Math.floor(diff)}s ago`;
+      if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+      return `${Math.floor(diff/3600)}h ago`;
+    }
+
+    function shortTime(iso) {
+      if (!iso) return "";
+      return new Date(iso).toLocaleTimeString("en-IN", { hour12: false });
+    }
+
+    async function poll() {
+      try {
+        const resp = await fetch("/api/state");
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        const s = await resp.json();
+
+        // Connection badge
+        const badge = $("conn-badge");
+        const connText = $("conn-text");
+        if (s.heartbeats > 0) {
+          badge.className = "conn-badge connected";
+          connText.textContent = `Connected — SN: ${s.deviceSN}`;
+          $("instructions").style.display = "none";
+        } else {
+          // Check if ANY raw hits came (even non-heartbeat)
+          const deviceHits = s.rawHits.filter(h => h.from !== "bridge" && !h.from.includes("::1") && !h.from.includes("127.0.0.1"));
+          if (deviceHits.length > 0) {
+            badge.className = "conn-badge connected";
+            connText.textContent = "Device reaching server (no heartbeat yet)";
+          }
+        }
+
+        // Stats
+        $("s-heartbeats").textContent = s.heartbeats;
+        $("s-last-hb").textContent = s.lastHeartbeat ? `Last: ${timeAgo(s.lastHeartbeat)}` : "No heartbeat yet";
+        $("s-records").textContent = s.records.length;
+        $("s-sn").textContent = s.deviceSN || "—";
+        $("s-uptime").textContent = `Bridge up: ${timeAgo(s.startedAt)}`;
+        $("s-hits").textContent = s.rawHits.length;
+
+        // Attendance table
+        $("att-count").textContent = s.records.length;
+        const attBody = $("att-body");
+        const attEmpty = $("att-empty");
+        if (s.records.length > 0) {
+          attEmpty.style.display = "none";
+          attBody.innerHTML = s.records.slice().reverse().map(r => `
+            <tr>
+              <td class="mono">${r.pin || "—"}</td>
+              <td class="mono">${r.timestamp || "—"}</td>
+              <td>${r.status || "0"}</td>
+              <td>${r.verify || "0"}</td>
+              <td class="mono">${r.sn || "—"}</td>
+              <td class="mono">${shortTime(r.receivedAt)}</td>
+            </tr>
+          `).join("");
+        } else {
+          attEmpty.style.display = "block";
+          attBody.innerHTML = "";
+        }
+
+        // Raw hits
+        $("raw-count").textContent = s.rawHits.length;
+        const rawBody = $("raw-body");
+        const rawEmpty = $("raw-empty");
+        if (s.rawHits.length > 0) {
+          rawEmpty.style.display = "none";
+          rawBody.innerHTML = s.rawHits.slice().reverse().map(h => `
+            <div class="raw-entry">
+              <span class="ts">${shortTime(h.time)}</span>
+              <span class="method ${h.method}">${h.method}</span>
+              <span>${h.path}</span>
+              <span style="color:#555"> from ${h.from}</span>
+              ${h.bodyPreview && h.bodyPreview !== "{}" ? `<div style="color:#666;margin-top:.2rem;padding-left:1rem">${h.bodyPreview.substring(0,200)}</div>` : ""}
+            </div>
+          `).join("");
+        }
+
+      } catch (err) {
+        console.error("Poll error:", err);
+      }
+    }
+
+    poll();
+    setInterval(poll, POLL_MS);
+  </script>
+</body>
+</html>

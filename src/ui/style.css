@@ -1,0 +1,89 @@
+/* src/ui/style.css */
+/* Global reset & modern font */
+html, body, div, span, applet, object, iframe,
+ h1, h2, h3, h4, h5, h6, p, blockquote, pre,
+ a, abbr, acronym, address, big, cite, code,
+ del, dfn, em, img, ins, kbd, q, s, samp,
+ small, strike, strong, sub, sup, tt, var,
+ b, u, i, center,
+ dl, dt, dd, ol, ul, li,
+ fieldset, form, label, legend,
+ table, caption, tbody, tfoot, thead, tr, th, td {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    font-size: 100%;
+    font: inherit;
+    vertical-align: baseline;
+}
+/* Box sizing */
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: linear-gradient(135deg, #0e0e0e, #131424);
+  color: #e0e0e0;
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 1rem;
+}
+
+.container {
+  width: 100%;
+  max-width: 1200px;
+  background: rgba(255,255,255,0.04);
+  backdrop-filter: blur(12px);
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+  overflow: hidden;
+}
+
+.header {
+  background: rgba(0,0,0,0.25);
+  padding: 1rem 2rem;
+  text-align: center;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+.header h1 { font-size: 2rem; margin-bottom: .3rem; }
+.header .status { font-size: .9rem; color: #a0a0a0; }
+
+.log-section { padding: 1.5rem 2rem; }
+.log-section h2 { margin-bottom: .8rem; font-size: 1.5rem; }
+
+.log-table-wrapper { overflow-x:auto; }
+.log-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0 8px;
+}
+.log-table th {
+  background: rgba(255,255,255,0.08);
+  color: #c0c0c0;
+  font-weight: 600;
+  padding: .6rem .8rem;
+  text-align: left;
+}
+.log-table td {
+  background: rgba(255,255,255,0.12);
+  padding: .6rem .8rem;
+  border-radius: 8px;
+  transition: background .2s ease;
+}
+.log-table tbody tr:hover td { background: rgba(255,255,255,0.2); }
+
+.no-data { text-align:center; color:#777; margin-top:1rem; }
+
+.footer {
+  background: rgba(0,0,0,0.25);
+  text-align:center;
+  padding: .8rem;
+  font-size:.85rem;
+  color:#888;
+}
+
+@media (max-width: 768px) {
+  .header h1 { font-size:1.6rem; }
+  .log-section h2 { font-size:1.3rem; }
+}

@@ -1,0 +1,4 @@
+node_modules/
+.env
+attendance_logs.json
+raw_events.log

@@ -928,9 +928,17 @@ wss7788.on('connection', (ws, req) => {
 
         // Check for Register request (WebSocket handshake)
         if (text.includes('<Request>Register</Request>')) {
-          log(`🌐 WS7788 REGISTER request received — sending registration ACK`);
+          log(`🌐 WS7788 REGISTER request received (full XML): ${text}`);
+
+          // Extract CloudId and DeviceSerialNo from the device's XML
+          const cloudIdMatch = text.match(/<CloudId>(.*?)<\/CloudId>/);
+          const serialMatch  = text.match(/<DeviceSerialNo>(.*?)<\/DeviceSerialNo>/);
+          const cloudId  = cloudIdMatch  ? cloudIdMatch[1]  : 'M2025011735';
+          const serialNo = serialMatch   ? serialMatch[1]   : 'M2025011735';
+
           const serverTime = new Date().toISOString().replace('T', ' ').substring(0, 19);
-          const regAck = `<?xml version="1.0"?><Message><Return>Success</Return><ServerTime>${serverTime}</ServerTime></Message>`;
+          // Send richer ACK with CloudId, DeviceID echoed back, and config fields
+          const regAck = `<?xml version="1.0"?><Message><Return>Success</Return><CloudId>${cloudId}</CloudId><DeviceID>${serialNo}</DeviceID><ServerTime>${serverTime}</ServerTime><RealTime>1</RealTime><Encrypt>0</Encrypt></Message>`;
           try {
             ws.send(Buffer.from(regAck));
             log(`🌐 WS7788 Registration ACK sent: ${regAck}`);

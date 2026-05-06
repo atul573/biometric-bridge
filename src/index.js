@@ -1,5 +1,7 @@
 import express from "express";
 import net from "net";
+import { WebSocketServer } from "ws";
+import http from "http";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
@@ -15,6 +17,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PORT = process.env.PORT || 80;
 const TCP_PORT = process.env.TCP_PORT || 1018;
+const WS_PORT = process.env.WS_PORT || 1018; // WebSocket on same port as TCP
 
 // In-memory store
 const state = {
@@ -562,17 +565,103 @@ const tcpServer = net.createServer((socket) => {
   });
 });
 
-// ── Start both servers ──
-app.listen(PORT, "0.0.0.0", () => {
+// ═══════════════════════════════════════════════════════════════════
+// WEBSOCKET SERVER (Mantra WebSocket mode on port 1018)
+// ═══════════════════════════════════════════════════════════════════
+
+// Create HTTP server for Express (port 80)
+const httpServer = http.createServer(app);
+
+// Attach WebSocket to the HTTP server (port 80) for upgrade requests
+const wss80 = new WebSocketServer({ server: httpServer });
+
+// Standalone WebSocket server on port 1018
+const wsServer1018 = http.createServer((req, res) => {
+  // Handle plain HTTP requests on 1018 as fallback
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('OK');
+});
+const wss1018 = new WebSocketServer({ server: wsServer1018 });
+
+function handleWebSocket(ws, req, label) {
+  const remote = req.socket.remoteAddress + ':' + req.socket.remotePort;
+  state.tcpConnections++;
+  log(`🌐 WEBSOCKET CONNECTION #${state.tcpConnections} from ${remote} (${label})`);
+  log(`🌐 WS URL: ${req.url}`);
+  log(`🌐 WS Headers: ${JSON.stringify(req.headers)}`);
+
+  ws.on('message', async (data, isBinary) => {
+    const raw = isBinary ? data : data.toString('utf8');
+    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+    log(`🌐 WS MESSAGE from ${remote}: ${buf.length} bytes`);
+    log(`🌐 WS RAW: ${typeof raw === 'string' ? raw.substring(0, 500) : buf.toString('hex').substring(0, 500)}`);
+
+    // Check if it's the familiar XML format
+    const text = buf.toString('utf8');
+    if (text.includes('<Message>') || text.includes('</Message>')) {
+      // Process same as TCP XML
+      await processMantraMessage(buf, {
+        write: (ackData) => {
+          try {
+            // Send ACK back via WebSocket
+            const ackStr = Buffer.isBuffer(ackData) ? ackData.toString('utf8').replace(/\0/g, '') : ackData;
+            ws.send(ackStr);
+            log(`🌐 WS ACK sent: ${ackStr}`);
+          } catch (e) {
+            log(`⚠️ WS ACK send failed: ${e.message}`);
+          }
+        }
+      }, remote);
+    } else {
+      // Unknown format — log it and try JSON ACK
+      log(`🌐 WS UNKNOWN format: ${text.substring(0, 200)}`);
+      try {
+        const ack = JSON.stringify({ Return: "True", status: 1 });
+        ws.send(ack);
+        log(`🌐 WS generic ACK sent: ${ack}`);
+      } catch (e) {
+        log(`⚠️ WS generic ACK failed: ${e.message}`);
+      }
+    }
+  });
+
+  ws.on('close', (code, reason) => {
+    log(`🌐 WS DISCONNECTED: ${remote} (code=${code}, reason=${reason})`);
+  });
+
+  ws.on('error', (err) => {
+    log(`❌ WS ERROR from ${remote}: ${err.message}`);
+  });
+
+  // Send initial handshake — some devices expect a greeting
+  try {
+    ws.send(JSON.stringify({ Return: "True", status: 1 }));
+    log(`🌐 WS initial handshake sent to ${remote}`);
+  } catch (e) {
+    log(`⚠️ WS handshake failed: ${e.message}`);
+  }
+}
+
+wss80.on('connection', (ws, req) => handleWebSocket(ws, req, 'port-80'));
+wss1018.on('connection', (ws, req) => handleWebSocket(ws, req, 'port-1018'));
+
+// ── Start all servers ──
+httpServer.listen(PORT, "0.0.0.0", () => {
   console.log("\n" + "═".repeat(56));
-  console.log("  🌉 BIOMETRIC BRIDGE (Cloud) — Mantra eBioServer XML");
+  console.log("  🌉 BIOMETRIC BRIDGE (Cloud) — Mantra eBioServer");
   console.log("═".repeat(56));
-  console.log(`  HTTP Dashboard  → port ${PORT}`);
-  console.log(`  TCP Listener    → port ${TCP_PORT}`);
+  console.log(`  HTTP + WS       → port ${PORT}`);
+  console.log(`  TCP + WS        → port ${TCP_PORT}`);
   console.log(`  Aimify Backend  → ${process.env.AIMIFY_BACKEND_URL || "not configured"}`);
   console.log("═".repeat(56) + "\n");
 });
 
+// TCP server handles raw TCP connections
 tcpServer.listen(TCP_PORT, "0.0.0.0", () => {
   log(`🔌 TCP server listening on port ${TCP_PORT}`);
+});
+
+// WebSocket server on port 1019 (device WebSocket mode)
+wsServer1018.listen(1019, "0.0.0.0", () => {
+  log(`🌐 WebSocket server listening on port 1019`);
 });

@@ -681,7 +681,7 @@ const tcpServer = net.createServer((socket) => {
     }
 
     log(`📦 TCP DATA from ${remote} (${buffer.length} bytes)`);
-    log(`🔬 RAW HEX (first 80): ${buffer.toString('hex').substring(0, 160)}`);
+    log(`🔬 FULL HEX: ${buffer.toString('hex')}`);
     log(`🔬 RAW TEXT: ${text.substring(0, 600)}`);
     // Check what's AFTER </Message>
     const endIdx = text.indexOf('</Message>');

@@ -957,19 +957,36 @@ const tcpServer = net.createServer((socket) => {
     // ══════════════════════════════════════════════════════
     try {
       // OK\r\n per firmware documentation — raw bytes, CRLF terminated
-      // Extract TransID from XML for proper XML ACK
-    // Device only advances flash queue when it sees TransID echoed back in XML
+      // ── ROTATING ACK TEST: cycle through 3 formats to find which clears device queue ──
     const rawTextAck = buffer.toString('utf8');
     const ackTIDMatch = rawTextAck.match(/<TransID>(.*?)<\/TransID>/);
     const ackTransID = ackTIDMatch ? ackTIDMatch[1] : '0';
     const ackUIDMatch = rawTextAck.match(/<DeviceUID>(.*?)<\/DeviceUID>/);
     const ackDevUID = ackUIDMatch ? ackUIDMatch[1] : '';
 
-    // XML ACK: echo TransID + Result=1 + null terminator (\0)
-    // This is what working servers send — NOT plain OK\r\n
-    const xmlAck = `<?xml version="1.0"?><Message><DeviceUID>${ackDevUID}</DeviceUID><TransID>${ackTransID}</TransID><Result>1</Result></Message>\0`;
-    socket.write(Buffer.from(xmlAck));
-    log(`✅ XML ACK sent to ${remote} → TransID=${ackTransID} Result=1`);
+    // Rotate ACK format each connection: 0=OK\r\n, 1=XML, 2=200 OK\r\n
+    state.ackRotation = (state.ackRotation || 0);
+    const ackMode = state.ackRotation % 3;
+    state.ackRotation++;
+
+    let ackBuf, ackLabel;
+    if (ackMode === 0) {
+      // Format A: Plain OK\r\n (original)
+      ackBuf = Buffer.from('OK\r\n');
+      ackLabel = 'A:OK\\r\\n';
+    } else if (ackMode === 1) {
+      // Format B: XML with TransID echoed + null terminator
+      const xmlAck = `<?xml version="1.0"?><Message><DeviceUID>${ackDevUID}</DeviceUID><TransID>${ackTransID}</TransID><Result>1</Result></Message>\0`;
+      ackBuf = Buffer.from(xmlAck);
+      ackLabel = `B:XML(TransID=${ackTransID})`;
+    } else {
+      // Format C: 200 OK (HTTP-style, some firmware variants expect this)
+      ackBuf = Buffer.from('200 OK\r\n');
+      ackLabel = 'C:200OK';
+    }
+
+    socket.write(ackBuf);
+    log(`✅ ACK [${ackLabel}] sent to ${remote} — if device STOPS retransmitting after this, this format works!`);
     } catch (e) {
       log(`⚠️ Failed to send ACK: ${e.message}`);
     }

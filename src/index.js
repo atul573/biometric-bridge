@@ -679,46 +679,46 @@ async function handleFkwebRequest(req, res) {
   if (requestCode === 'realtime_glog') {
     log(`📡 FKWEB ATTENDANCE LOG received (${rawBuf.length} bytes) from dev=${devId}`);
 
-    // Try to decode as UTF-8 text first (some firmware versions use text)
-    const text = rawBuf.toString('utf8');
-    log(`📡 FKWEB glog text: ${text}`);
+    // Format: [1 byte type][3 bytes padding][JSON payload]
+    // JSON contains: user_id, io_time (YYYYMMDDHHmmss), verify_mode, io_mode
+    try {
+      // Find JSON start (first '{')
+      const jsonStart = rawBuf.indexOf(0x7B); // 0x7B = '{'
+      if (jsonStart === -1) throw new Error('No JSON found in glog payload');
 
-    // Try null-terminated string fields — common format:
-    // [pin\0][timestamp\0][verify_type][status][...padding...]
-    // Split on null bytes to find strings
-    const nullParts = text.split('\x00').map(s => s.trim()).filter(s => s.length > 0);
-    log(`📡 FKWEB glog null-split parts: ${JSON.stringify(nullParts)}`);
+      const jsonStr = rawBuf.slice(jsonStart).toString('utf8');
+      log(`📡 FKWEB glog JSON: ${jsonStr}`);
+      const glog = JSON.parse(jsonStr);
 
-    // Look for timestamp pattern YYYY-MM-DD HH:MM:SS
-    const tsMatch = text.match(/(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/);
-    const timestamp = tsMatch ? tsMatch[1] : null;
+      // user_id is zero-padded like "00000078" → "78"
+      const userID = String(parseInt(glog.user_id || '0', 10));
 
-    // First non-empty null-split part before timestamp is usually the UserID
-    let userID = null;
-    for (const part of nullParts) {
-      if (/^\d+$/.test(part) && part.length <= 10) { userID = part; break; }
-    }
+      // io_time format: "20260506215837" → "2026-05-06 21:58:37"
+      const raw = glog.io_time || '';
+      const timestamp = raw.length === 14
+        ? `${raw.slice(0,4)}-${raw.slice(4,6)}-${raw.slice(6,8)} ${raw.slice(8,10)}:${raw.slice(10,12)}:${raw.slice(12,14)}`
+        : raw;
 
-    if (userID && timestamp) {
-      log(`📋 FKWEB ATTENDANCE: User ${userID} | ${timestamp} | dev=${devId}`);
+      const ioMode   = glog.io_mode ?? 0;    // 0=check-in, 1=check-out
+      const verifyMode = glog.verify_mode ?? 0; // 1=card, 2=FP, 15=face
+
+      log(`📋 FKWEB ATTENDANCE: User ${userID} | ${timestamp} | io_mode=${ioMode} | verify=${verifyMode} | dev=${devId}`);
+
       const dedupKey = `fkweb|${userID}|${timestamp}`;
       if (!state.processedTransIDs.has(dedupKey)) {
         state.processedTransIDs.add(dedupKey);
-        try {
-          const attlogBody = `${userID}\t${timestamp}\t0\t1\t0\t0\t0`;
-          await sendPunchLogs(devId, attlogBody);
-          state.forwarded++;
-          state.lastForward = new Date().toISOString();
-          log(`✅ FKWEB: Forwarded User ${userID} @ ${timestamp} to Aimify`);
-        } catch (e) {
-          log(`❌ FKWEB forward failed: ${e.message}`);
-        }
+        const attlogBody = `${userID}\t${timestamp}\t${ioMode}\t${verifyMode}\t0\t0\t0`;
+        await sendPunchLogs(devId, attlogBody);
+        state.forwarded++;
+        state.lastForward = new Date().toISOString();
+        state.records.push({ source: 'fkweb', userID, timestamp, status: String(ioMode), receivedAt: new Date().toISOString() });
+        log(`✅ FKWEB: Forwarded User ${userID} @ ${timestamp} to Aimify`);
       } else {
         log(`⏭️ FKWEB duplicate ${dedupKey} — skipping`);
       }
-    } else {
-      log(`⚠️ FKWEB could not parse glog — userID=${userID} timestamp=${timestamp}`);
-      log(`⚠️ FKWEB full hex dump: ${rawBuf.toString('hex')}`);
+    } catch (e) {
+      log(`❌ FKWEB glog parse error: ${e.message}`);
+      log(`❌ FKWEB raw hex: ${rawBuf.toString('hex')}`);
     }
 
     res.send('OK');

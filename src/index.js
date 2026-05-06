@@ -695,10 +695,12 @@ const tcpServer = net.createServer((socket) => {
     // This is the critical fix: device expects raw 0x06
     // ══════════════════════════════════════════════════════
     try {
-      // Device sends XML <Message> — respond with XML ACK
-      const xmlAck = '<?xml version="1.0"?><Message><Status>Success</Status></Message>';
-      socket.write(Buffer.from(xmlAck));
-      log(`✅ XML ACK sent to ${remote}`);
+      // Build XML ACK mirroring device fields
+      const deviceUID = text.match(/<DeviceUID>(.*?)<\/DeviceUID>/)?.[1] || '';
+      const transID = text.match(/<TransID>(.*?)<\/TransID>/)?.[1] || '0';
+      const xmlAck = `<?xml version="1.0"?><Message><DeviceUID>${deviceUID}</DeviceUID><TransID>${transID}</TransID><Status>Success</Status></Message>`;
+      socket.write(Buffer.from(xmlAck + '\0\0'));
+      log(`✅ XML ACK sent (DevUID=${deviceUID} TxnID=${transID}) to ${remote}`);
     } catch (e) {
       log(`⚠️ Failed to send ACK: ${e.message}`);
     }

@@ -63,9 +63,8 @@ function parseMantraXML(xmlString) {
 }
 
 function buildAckXML(transID) {
-  // Mantra devices use \r\r\n line endings — match them in ACK
-  const CRLF = "\r\r\n";
-  return `<?xml version="1.0"?>${CRLF}<Message>${CRLF}<TransID>${transID}</TransID>${CRLF}<Status>OK</Status>${CRLF}</Message>${CRLF}\0`;
+  // Try matching eBioServer exact format: \r\n with null terminator
+  return `<?xml version="1.0"?>\r\n<Message>\r\n<TransID>${transID}</TransID>\r\n<Status>OK</Status>\r\n</Message>\r\n\0`;
 }
 
 /**
@@ -151,13 +150,10 @@ async function processMantraMessage(data, socket, remoteAddr) {
   // ── Send ACK immediately (so device moves to next record) ──
   try {
     const ack = buildAckXML(transID);
-    socket.write(ack, () => {
-      // Close socket after ACK is flushed — forces device to reconnect with next record
-      setTimeout(() => {
-        try { socket.end(); } catch (_) {}
-      }, 500);
-    });
-    log(`✅ ACK sent for TransID ${transID} (will close socket in 500ms)`);
+    const ackHex = Buffer.from(ack).toString('hex');
+    log(`📤 ACK hex (${ack.length} bytes): ${ackHex}`);
+    socket.write(ack);
+    log(`✅ ACK sent for TransID ${transID}`);
   } catch (e) {
     log(`⚠️ Failed to send ACK: ${e.message}`);
   }

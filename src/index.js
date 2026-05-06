@@ -6,7 +6,11 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { fileURLToPath } from "url";
+import { createRequire } from "module";
 import { sendHeartbeat, sendPunchLogs } from "./services/aimify.js";
+
+const require = createRequire(import.meta.url);
+const ZKLib = require("zkteco-js");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -70,6 +74,38 @@ function buildAckXML(transID, serialNo) {
   // matching the TransID to advance the queue pointer
   const xml = `<?xml version="1.0"?><Response><Status>Success</Status><TransID>${transID}</TransID></Response>`;
   return Buffer.concat([Buffer.from(xml, 'utf8'), Buffer.from([0x00])]);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ZKTeco SDK — Remote device management via UDP port 4370
+// ═══════════════════════════════════════════════════════════════════
+
+let clearingInProgress = false;
+
+async function clearDeviceLogs(deviceIP) {
+  if (clearingInProgress) {
+    log(`⏳ Clear already in progress, skipping`);
+    return false;
+  }
+  clearingInProgress = true;
+  log(`🔧 ZK SDK: Connecting to device at ${deviceIP}:4370 to clear logs...`);
+
+  try {
+    const zk = new ZKLib(deviceIP, 4370, 5000, 4000);
+    await zk.createSocket();
+    log(`🔧 ZK SDK: Connected! Clearing attendance log...`);
+
+    await zk.clearAttendanceLog();
+    log(`✅ ZK SDK: Attendance log CLEARED successfully!`);
+
+    await zk.disconnect();
+    clearingInProgress = false;
+    return true;
+  } catch (err) {
+    log(`❌ ZK SDK: Failed to clear logs: ${err.message}`);
+    clearingInProgress = false;
+    return false;
+  }
 }
 
 /**
@@ -507,11 +543,23 @@ app.get("/iclock/getrequest", (req, res) => {
   }
 });
 
-// ── Admin endpoint to queue CLEAR LOG command ──
-app.post("/admin/clear-device-log", (req, res) => {
-  deviceCommandQueue.push("C:1:CLEAR LOG");
-  log(`🗑️ CLEAR LOG command queued for next device heartbeat`);
-  res.json({ success: true, message: "CLEAR LOG command queued" });
+// ── Admin endpoint to clear device logs via ZK SDK (port 4370 UDP) ──
+app.post("/admin/clear-device-log", async (req, res) => {
+  // Get device IP from last known connection
+  const deviceInfo = Object.values(state.devices)[0];
+  if (!deviceInfo || !deviceInfo.ip) {
+    return res.json({ success: false, message: "No device IP known yet" });
+  }
+
+  const ip = deviceInfo.ip.replace('::ffff:', '');
+  log(`🗑️ Admin: Clearing logs on device at ${ip} via ZK SDK...`);
+
+  const result = await clearDeviceLogs(ip);
+  res.json({
+    success: result,
+    message: result ? "Attendance log cleared via ZK SDK!" : "Failed to clear — see logs",
+    deviceIP: ip,
+  });
 });
 
 // ── Catch-all ──

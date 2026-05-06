@@ -176,17 +176,20 @@ const tcpServer = net.createServer((socket) => {
 
   socket.on("data", (data) => {
     const hex = data.toString("hex");
-    const ascii = data.toString("ascii").replace(/[^\x20-\x7E]/g, ".");
+    const ascii = data.toString("utf8").replace(/[^\x20-\x7E\r\n]/g, ".");
     log(`📦 TCP DATA from ${remote} (${data.length} bytes)`);
-    log(`  HEX: ${hex.substring(0, 200)}`);
-    log(`  ASCII: ${ascii.substring(0, 200)}`);
+    log(`  FULL MESSAGE:\n${ascii}`);
+
+    // Save full message to file for analysis
+    const logLine = `\n=== ${new Date().toISOString()} from ${remote} ===\n${data.toString("utf8")}\n`;
+    fs.appendFileSync("/root/tcp_messages.log", logLine);
 
     state.rawHits.push({
       time: new Date().toISOString(),
       method: "TCP-DATA",
       path: `TCP:${TCP_PORT}`,
       from: remote,
-      bodyPreview: `[${data.length}B] ${ascii.substring(0, 200)}`,
+      bodyPreview: ascii.substring(0, 500),
     });
 
     // Try to parse as HTTP (some devices send HTTP over non-standard ports)

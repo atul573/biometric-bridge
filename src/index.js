@@ -64,13 +64,7 @@ function parseMantraXML(xmlString) {
 
 function buildAckXML(transID) {
   // Match device format: single continuous XML line, null-terminated
-  // Include both Status and Result for maximum compatibility
   return `<?xml version="1.0"?><Message><TransID>${transID}</TransID><Result>1</Result><Status>OK</Status></Message>\x00`;
-}
-
-function buildClearLogCmd(transID) {
-  // Command to tell device to clear the acknowledged log entry
-  return `<?xml version="1.0"?><Message><TransID>${transID}</TransID><Command>ClearLog</Command><Result>1</Result></Message>\x00`;
 }
 
 /**
@@ -153,22 +147,16 @@ async function processMantraMessage(data, socket, remoteAddr) {
   };
   state.deviceSN = serialNo;
 
-  // ── Send ACK immediately (so device moves to next record) ──
+  // ── Send ACK immediately ──
+  // NOTE: Mantra M50 firmware does NOT process ACKs to clear its queue.
+  // The device will keep resending the same records until manually cleared.
+  // Our composite dedup key handles this gracefully.
   try {
     const ack = buildAckXML(transID);
     const ackHex = Buffer.from(ack).toString('hex');
     log(`📤 ACK hex (${ack.length} bytes): ${ackHex}`);
     socket.write(ack);
     log(`✅ ACK sent for TransID ${transID}`);
-
-    // After ACK, send ClearLog command to tell device to purge this record
-    setTimeout(() => {
-      try {
-        const clearCmd = buildClearLogCmd(transID);
-        socket.write(clearCmd);
-        log(`🗑️ ClearLog command sent for TransID ${transID}`);
-      } catch (_) {}
-    }, 500);
   } catch (e) {
     log(`⚠️ Failed to send ACK: ${e.message}`);
   }

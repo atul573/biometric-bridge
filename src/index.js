@@ -923,13 +923,36 @@ wss7788.on('connection', (ws, req) => {
       }
 
     } catch (e) {
-      // Not JSON — check if XML (fallback to TCP mode processing)
+      // Not JSON — check if XML
       if (text.includes('<Message>') || text.includes('</Message>')) {
-        log(`🌐 WS7788 XML format received (TCP protocol over WS)`);
-        ws.send(Buffer.from('OK\r\n'));
-        processMantraMessage(buf, remote).catch(err => log(`❌ WS7788 XML error: ${err.message}`));
+
+        // Check for Register request (WebSocket handshake)
+        if (text.includes('<Request>Register</Request>')) {
+          log(`🌐 WS7788 REGISTER request received — sending registration ACK`);
+          const serverTime = new Date().toISOString().replace('T', ' ').substring(0, 19);
+          const regAck = `<?xml version="1.0"?><Message><Return>Success</Return><ServerTime>${serverTime}</ServerTime></Message>`;
+          try {
+            ws.send(Buffer.from(regAck));
+            log(`🌐 WS7788 Registration ACK sent: ${regAck}`);
+          } catch (err) {
+            log(`⚠️ WS7788 reg ACK send failed: ${err.message}`);
+          }
+
+        } else if (text.includes('<Event>TimeLog</Event>') || text.includes('<Event>AdminLog</Event>')) {
+          // Attendance / admin log
+          log(`🌐 WS7788 XML attendance/log received`);
+          ws.send(Buffer.from('OK\r\n'));
+          processMantraMessage(buf, remote).catch(err => log(`❌ WS7788 XML error: ${err.message}`));
+
+        } else {
+          // Generic XML — ACK and process
+          log(`🌐 WS7788 XML generic format received`);
+          ws.send(Buffer.from('OK\r\n'));
+          processMantraMessage(buf, remote).catch(err => log(`❌ WS7788 XML error: ${err.message}`));
+        }
+
       } else {
-        log(`🌐 WS7788 UNKNOWN format (not JSON/XML): ${text.substring(0, 100)}`);
+        log(`🌐 WS7788 UNKNOWN format (not JSON/XML): ${text.substring(0, 200)}`);
         ws.send(JSON.stringify({ Return: "True", status: 1 }));
       }
     }

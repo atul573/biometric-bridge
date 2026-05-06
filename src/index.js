@@ -64,7 +64,7 @@ function parseMantraXML(xmlString) {
 
 function buildAckXML(transID) {
   // Match device format: single continuous XML line, null-terminated
-  return `<?xml version="1.0"?><Message><TransID>${transID}</TransID><Status>OK</Status></Message>\0`;
+  return `<?xml version="1.0"?><Message><TransID>${transID}</TransID><Status>OK</Status></Message>\x00`;
 }
 
 /**

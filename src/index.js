@@ -66,15 +66,10 @@ function parseMantraXML(xmlString) {
 }
 
 function buildAckXML(transID, serialNo) {
-  // Try HTTP 200 OK format — standard for BioFace "TCP/IP" push mode
-  // Many devices treat TCP push as HTTP under the hood
-  const body = 'OK';
-  const http = 'HTTP/1.1 200 OK\r\n'
-    + 'Content-Type: text/plain\r\n'
-    + 'Content-Length: ' + body.length + '\r\n'
-    + '\r\n'
-    + body;
-  return Buffer.from(http, 'utf8');
+  // Mantra BioFace TCP push expects plain-text ACK — NOT HTTP headers
+  // Research confirms: device needs "OK" or "Ret=0" as plain text
+  // Try: "OK\n" — the simplest format that clears the queue
+  return Buffer.concat([Buffer.from('OK\n', 'utf8'), Buffer.from([0x00])]);
 }
 
 /**

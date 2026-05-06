@@ -153,12 +153,7 @@ async function processMantraMessage(data, socket, remoteAddr) {
     const ack = buildAckXML(transID);
     const ackHex = Buffer.from(ack).toString('hex');
     log(`📤 ACK hex (${ack.length} bytes): ${ackHex}`);
-    socket.write(ack, () => {
-      // Close socket after ACK is flushed — device needs FIN to process response
-      setTimeout(() => {
-        try { socket.end(); } catch (_) {}
-      }, 200);
-    });
+    socket.write(ack);
     log(`✅ ACK sent for TransID ${transID}`);
   } catch (e) {
     log(`⚠️ Failed to send ACK: ${e.message}`);

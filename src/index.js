@@ -952,80 +952,71 @@ const tcpServer = net.createServer((socket) => {
     }
 
     // ══════════════════════════════════════════════════════
-    // STEP 1: Send ACK IMMEDIATELY — before ANY processing
-    // This is the critical fix: device expects raw 0x06
+    // STEP 1: Extract TransID + DeviceUID from the message
     // ══════════════════════════════════════════════════════
-    try {
-      // OK\r\n per firmware documentation — raw bytes, CRLF terminated
-      // ── ROTATING ACK TEST: cycle through 3 formats to find which clears device queue ──
     const rawTextAck = buffer.toString('utf8');
     const ackTIDMatch = rawTextAck.match(/<TransID>(.*?)<\/TransID>/);
     const ackTransID = ackTIDMatch ? ackTIDMatch[1] : '0';
     const ackUIDMatch = rawTextAck.match(/<DeviceUID>(.*?)<\/DeviceUID>/);
     const ackDevUID = ackUIDMatch ? ackUIDMatch[1] : '';
 
-    // Rotate ACK format each connection: 0=OK\r\n, 1=XML, 2=200 OK\r\n
-    state.ackRotation = (state.ackRotation || 0);
-    const ackMode = state.ackRotation % 3;
-    state.ackRotation++;
-
-    let ackBuf, ackLabel;
-    if (ackMode === 0) {
-      // Format A: Plain OK\r\n (original)
-      ackBuf = Buffer.from('OK\r\n');
-      ackLabel = 'A:OK\\r\\n';
-    } else if (ackMode === 1) {
-      // Format B: XML with TransID echoed + null terminator
-      const xmlAck = `<?xml version="1.0"?><Message><DeviceUID>${ackDevUID}</DeviceUID><TransID>${ackTransID}</TransID><Result>1</Result></Message>\0`;
-      ackBuf = Buffer.from(xmlAck);
-      ackLabel = `B:XML(TransID=${ackTransID})`;
-    } else {
-      // Format C: 200 OK (HTTP-style, some firmware variants expect this)
-      ackBuf = Buffer.from('200 OK\r\n');
-      ackLabel = 'C:200OK';
-    }
-
-    socket.write(ackBuf);
-    log(`✅ ACK [${ackLabel}] sent to ${remote} — if device STOPS retransmitting after this, this format works!`);
-    } catch (e) {
-      log(`⚠️ Failed to send ACK: ${e.message}`);
-    }
-
     // Capture buffer before clearing
     const completeMessage = buffer;
     buffer = Buffer.alloc(0);
 
     // ══════════════════════════════════════════════════════
-    // STEP 2: Process data AFTER ACK (async, non-blocking)
+    // STEP 2: Send ACK immediately on the SAME socket
+    // Device stays connected ~60s, use that window!
+    // ══════════════════════════════════════════════════════
+    try {
+      socket.write(Buffer.from('OK\r\n'));
+      log(`✅ ACK OK sent to ${remote} — TransID=${ackTransID}`);
+    } catch (e) {
+      log(`⚠️ ACK failed: ${e.message}`);
+    }
+
+    // ══════════════════════════════════════════════════════
+    // STEP 3: Process the attendance data
     // ══════════════════════════════════════════════════════
     processMantraMessage(completeMessage, remote).catch((err) => {
       log(`❌ Process error: ${err.message}`);
     });
 
     // ══════════════════════════════════════════════════════
-    // STEP 3: Connect back to device:5005 and send DeleteLog
-    // This is how eBioServer actually clears the M50 FIFO queue
+    // STEP 4: Send DeleteLog ON THE SAME SOCKET (300ms later)
+    // Device is still connected — send command while socket is open
+    // This is the KEY FIX: outbound port 5005 fails (device behind NAT)
+    // but we CAN write to the INBOUND socket the device opened to us!
     // ══════════════════════════════════════════════════════
-    const msgText = completeMessage.toString('utf8');
-    const deviceUID = msgText.match(/<DeviceUID>(.*?)<\/DeviceUID>/)?.[1] || '';
-    const transID = msgText.match(/<TransID>(.*?)<\/TransID>/)?.[1] || '0';
-    const deviceIP = socket.remoteAddress;
-    const deviceCmdPort = 5005;
-
-    const deleteCmd = `<?xml version="1.0"?><Message><DeviceUID>${deviceUID}</DeviceUID><TransID>${transID}</TransID><Command>DeleteLog</Command></Message>\0\0`;
-
     setTimeout(() => {
-      const cmdSocket = new net.Socket();
-      cmdSocket.setTimeout(5000);
-      cmdSocket.connect(deviceCmdPort, deviceIP, () => {
-        log(`📤 Connected to device ${deviceIP}:${deviceCmdPort} — sending DeleteLog`);
-        cmdSocket.write(Buffer.from(deleteCmd));
-        cmdSocket.end();
-      });
-      cmdSocket.on('data', (d) => log(`📥 Device cmd response: ${d.toString('hex')}`));
-      cmdSocket.on('error', (e) => log(`⚠️ Device cmd connect failed: ${e.message}`));
-      cmdSocket.on('timeout', () => { cmdSocket.destroy(); log(`⚠️ Device cmd timeout`); });
-    }, 500);
+      try {
+        if (socket.destroyed || !socket.writable) {
+          log(`⚠️ Socket closed before DeleteLog could be sent for TransID=${ackTransID}`);
+          return;
+        }
+
+        // Try multiple delete command formats — one should work
+        // Format 1: XML DeleteLog (Mantra eBioServer style)
+        const delCmd1 = `<?xml version="1.0"?><Message><DeviceUID>${ackDevUID}</DeviceUID><TransID>${ackTransID}</TransID><Command>DeleteLog</Command></Message>\0`;
+        // Format 2: XML ClearLog (ZKTeco style)  
+        const delCmd2 = `<?xml version="1.0"?><Message><DeviceUID>${ackDevUID}</DeviceUID><TransID>${ackTransID}</TransID><Command>ClearLog</Command></Message>\0`;
+
+        socket.write(Buffer.from(delCmd1));
+        log(`🗑️ DeleteLog sent on inbound socket → TransID=${ackTransID} DeviceUID=${ackDevUID}`);
+
+        setTimeout(() => {
+          try {
+            if (!socket.destroyed && socket.writable) {
+              socket.write(Buffer.from(delCmd2));
+              log(`🗑️ ClearLog sent on inbound socket → TransID=${ackTransID}`);
+            }
+          } catch(e2) { log(`⚠️ ClearLog failed: ${e2.message}`); }
+        }, 200);
+
+      } catch (e) {
+        log(`⚠️ DeleteLog send failed: ${e.message}`);
+      }
+    }, 300);
   });
 
   socket.on("close", () => {

@@ -164,11 +164,13 @@ async function processMantraMessage(data, socket, remoteAddr) {
   sendHeartbeat(serialNo, remoteAddr.split(":")[0]).catch(() => {});
 
   // ── Check for duplicate (device may resend before ACK arrives) ──
-  if (state.processedTransIDs.has(transID)) {
-    log(`⏭️ Duplicate TransID ${transID} — skipping`);
+  // Use composite key: TransID can reset to 0 after device log clear
+  const dedupKey = `${transID}|${parsed.UserID || ""}|${parsed.Year}-${parsed.Month}-${parsed.Day}-${parsed.Hour}-${parsed.Minute}-${parsed.Second}`;
+  if (state.processedTransIDs.has(dedupKey)) {
+    log(`⏭️ Duplicate ${dedupKey} — skipping`);
     return;
   }
-  state.processedTransIDs.add(transID);
+  state.processedTransIDs.add(dedupKey);
 
   // Keep dedup set manageable (max 10000 entries)
   if (state.processedTransIDs.size > 10000) {

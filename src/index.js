@@ -967,40 +967,24 @@ const tcpServer = net.createServer((socket) => {
     buffer = Buffer.alloc(0);
 
     // ══════════════════════════════════════════════════════
-    // STEP 1: XML ACK with Result=0 (0=success in embedded protocols)
-    // CRITICAL: We were sending Result=1 which means ERROR → device retries forever!
-    // Result=0 = "record received and accepted, safe to delete from flash"
+    // ACK: EKBioFace V3.0 firmware expects a single 0x06 byte (ASCII ACK)
+    // This is the ONLY signal the device needs to mark the record as
+    // delivered and advance its flash queue to the next record.
+    // All previous attempts (OK\r\n, XML, Result=0/1) were wrong format.
     // ══════════════════════════════════════════════════════
     try {
-      // Primary: XML ACK with Result=0 (SUCCESS) + null terminator
-      const xmlAckSuccess = `<?xml version="1.0"?><Message><DeviceUID>${ackDevUID}</DeviceUID><TransID>${ackTransID}</TransID><Result>0</Result></Message>\0`;
-      socket.write(Buffer.from(xmlAckSuccess));
-      log(`✅ XML ACK Result=0 (SUCCESS) sent → TransID=${ackTransID} DeviceUID=${ackDevUID}`);
+      socket.write(Buffer.from([0x06])); // raw ASCII ACK byte
+      log(`✅ Binary ACK (0x06) sent → TransID=${ackTransID} — device should advance queue`);
     } catch (e) {
       log(`⚠️ ACK failed: ${e.message}`);
     }
 
     // ══════════════════════════════════════════════════════
-    // STEP 2: Process the attendance data
+    // Process the attendance data (async, non-blocking)
     // ══════════════════════════════════════════════════════
     processMantraMessage(completeMessage, remote).catch((err) => {
       log(`❌ Process error: ${err.message}`);
     });
-
-    // ══════════════════════════════════════════════════════
-    // STEP 3: Close socket 800ms after ACK
-    // Server-initiated close signals "delivery confirmed, done"
-    // Device will then advance its queue to the next record
-    // (This is how working servers trigger queue advancement)
-    // ══════════════════════════════════════════════════════
-    setTimeout(() => {
-      try {
-        if (!socket.destroyed) {
-          log(`🔒 Server closing socket after ACK → TransID=${ackTransID} — device should advance queue`);
-          socket.end(); // graceful FIN — device knows server is done with this record
-        }
-      } catch(e) { log(`⚠️ Socket close failed: ${e.message}`); }
-    }, 800);
   });
 
   socket.on("close", () => {

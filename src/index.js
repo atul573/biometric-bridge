@@ -967,14 +967,15 @@ const tcpServer = net.createServer((socket) => {
     buffer = Buffer.alloc(0);
 
     // ══════════════════════════════════════════════════════
-    // ACK: EKBioFace V3.0 firmware expects a single 0x06 byte (ASCII ACK)
-    // This is the ONLY signal the device needs to mark the record as
-    // delivered and advance its flash queue to the next record.
-    // All previous attempts (OK\r\n, XML, Result=0/1) were wrong format.
+    // ACK: EXACT format captured from working Minop server (103.117.48.10:1018)
+    // <?xml version="1.0"?><Message><Request>UploadedLog</Request><TransID>N</TransID></Message>\0
+    // Device clears the record from flash when it sees <Request>UploadedLog</Request>
+    // with its own TransID echoed back. This is what all other formats lacked.
     // ══════════════════════════════════════════════════════
     try {
-      socket.write(Buffer.from([0x06])); // raw ASCII ACK byte
-      log(`✅ Binary ACK (0x06) sent → TransID=${ackTransID} — device should advance queue`);
+      const ack = `<?xml version="1.0"?><Message><Request>UploadedLog</Request><TransID>${ackTransID}</TransID></Message>\x00`;
+      socket.write(Buffer.from(ack));
+      log(`✅ ACK sent → <Request>UploadedLog</Request> TransID=${ackTransID}`);
     } catch (e) {
       log(`⚠️ ACK failed: ${e.message}`);
     }
